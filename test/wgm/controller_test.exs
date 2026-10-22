@@ -1,0 +1,441 @@
+defmodule WGM.ControllerTest do
+  use ExUnit.Case
+
+  alias WGM.{Controller, Instance, Node}
+  alias WGM.Controller.AgentAdapter.Fake, as: FakeAgentAdapter
+
+  setup do
+    FakeAgentAdapter.start()
+    :ok
+  end
+
+  defp start_controller(opts \\ []) do
+    opts =
+      Keyword.merge(
+        [
+          db_path: ":memory:",
+          agent_adapter: FakeAgentAdapter,
+          keygen_adapter: WGM.CLI.FakeAdapter
+        ],
+        opts
+      )
+
+    {:ok, controller} = Controller.start_link(opts)
+    controller
+  end
+
+  describe "start_link/1" do
+    test "starts with empty state" do
+      controller = start_controller()
+      assert Controller.list_nodes(controller) == []
+      assert Controller.command_log(controller) == []
+    end
+  end
+
+  describe "register_node/3" do
+    test "creates a node and returns its id" do
+      controller = start_controller()
+
+      attrs = %{
+        id: "node-1",
+        name: "entry",
+        address: "193.233.91.130",
+        role: :entry
+      }
+
+      assert {:ok, "node-1"} = Controller.register_node(controller, "cmd-1", attrs)
+      assert [%Node{id: "node-1", name: "entry"}] = Controller.list_nodes(controller)
+    end
+
+    test "deduplicates repeated command id" do
+      controller = start_controller()
+
+      attrs = %{
+        id: "node-1",
+        name: "entry",
+        address: "193.233.91.130",
+        role: :entry
+      }
+
+      assert {:ok, "node-1"} = Controller.register_node(controller, "cmd-1", attrs)
+      assert {:ok, "node-1"} = Controller.register_node(controller, "cmd-1", attrs)
+      assert length(Controller.list_nodes(controller)) == 1
+      assert length(Controller.command_log(controller)) == 1
+      assert length(Controller.audit(controller)) == 1
+    end
+  end
+
+  describe "create_instance/3" do
+    test "creates an instance under an existing node" do
+      controller = start_controller()
+      register_node(controller, "node-1")
+
+      attrs = %{
+        id: "inst-1",
+        node_id: "node-1",
+        name: "wg1",
+        protocol: :wg,
+        listen_port: 51820,
+        subnet: "10.0.0.0/24",
+        address: "10.0.0.1/24",
+        private_key: "server-priv",
+        public_key: "server-pub"
+      }
+
+      assert {:ok, "inst-1"} = Controller.create_instance(controller, "cmd-inst", attrs)
+
+      assert [%Instance{id: "inst-1", protocol: :wg}] =
+               Controller.list_instances(controller, "node-1")
+    end
+
+    test "returns error when node does not exist" do
+      controller = start_controller()
+
+      attrs = %{
+        id: "inst-1",
+        node_id: "missing",
+        name: "wg1",
+        protocol: :wg,
+        listen_port: 51820,
+        subnet: "10.0.0.0/24",
+        address: "10.0.0.1/24",
+        private_key: "server-priv",
+        public_key: "server-pub"
+      }
+
+      assert {:error, "Node not found"} =
+               Controller.create_instance(controller, "cmd-inst", attrs)
+
+      assert Controller.list_instances(controller) == []
+    end
+
+    test "returns error when awg params are missing" do
+      controller = start_controller()
+      register_node(controller, "node-1")
+
+      attrs = %{
+        id: "inst-1",
+        node_id: "node-1",
+        name: "awg1",
+        protocol: :awg,
+        listen_port: 51820,
+        subnet: "10.0.0.0/24",
+        address: "10.0.0.1/24",
+        private_key: "server-priv",
+        public_key: "server-pub"
+      }
+
+      assert {:error, "AWG params are required"} =
+               Controller.create_instance(controller, "cmd-inst", attrs)
+
+      assert Controller.list_instances(controller) == []
+    end
+  end
+
+  describe "create_peer/3" do
+    test "generates keys and creates a peer" do
+      controller = start_controller()
+      register_node(controller, "node-1")
+      register_instance(controller, "node-1", "inst-1")
+
+      attrs = %{
+        id: "peer-1",
+        instance_id: "inst-1",
+        name: "laptop",
+        allowed_ips: "10.0.0.2/32",
+        address: "10.0.0.2/32"
+      }
+
+      assert {:ok, "peer-1"} = Controller.create_peer(controller, "cmd-peer", attrs)
+
+      [peer] = Controller.list_peers(controller, "inst-1")
+      assert peer.id == "peer-1"
+      assert peer.public_key == "public-for-#{peer.private_key}"
+      assert is_binary(peer.preshared_key)
+
+      assert Controller.audit(controller)
+             |> Enum.any?(fn event ->
+               event.type == "create_peer" and event.summary =~ "created peer peer-1"
+             end)
+    end
+  end
+
+  describe "client config" do
+    test "generates and stores client config" do
+      controller = start_controller()
+      register_node(controller, "node-1")
+      register_instance(controller, "node-1", "inst-1")
+
+      peer_attrs = %{
+        id: "peer-1",
+        instance_id: "inst-1",
+        name: "laptop",
+        allowed_ips: "10.0.0.2/32",
+        address: "10.0.0.2/32"
+      }
+
+      assert {:ok, "peer-1"} = Controller.create_peer(controller, "cmd-peer", peer_attrs)
+
+      assert {:ok, config} =
+               Controller.store_client_config(
+                 controller,
+                 "cmd-config",
+                 "peer-1",
+                 "193.233.91.130:51820"
+               )
+
+      assert config =~ "[Interface]"
+      assert config =~ "[Peer]"
+      assert config =~ "Endpoint = 193.233.91.130:51820"
+
+      assert Controller.get_client_config(controller, "peer-1") == config
+    end
+
+    test "deduplicates by command id" do
+      controller = start_controller()
+      register_node(controller, "node-1")
+      register_instance(controller, "node-1", "inst-1")
+
+      peer_attrs = %{
+        id: "peer-1",
+        instance_id: "inst-1",
+        name: "laptop",
+        allowed_ips: "10.0.0.2/32",
+        address: "10.0.0.2/32"
+      }
+
+      assert {:ok, "peer-1"} = Controller.create_peer(controller, "cmd-peer", peer_attrs)
+
+      assert {:ok, config1} =
+               Controller.store_client_config(
+                 controller,
+                 "cmd-config",
+                 "peer-1",
+                 "193.233.91.130:51820"
+               )
+
+      assert {:ok, config2} =
+               Controller.store_client_config(controller, "cmd-config", "peer-1", "1.2.3.4:51820")
+
+      assert config1 == config2
+      assert config2 =~ "Endpoint = 193.233.91.130:51820"
+
+      assert [
+               %{type: "store_client_config"}
+             ] =
+               Controller.command_log(controller)
+               |> Enum.filter(&(&1.type == "store_client_config"))
+    end
+
+    test "regenerates config with a different command id" do
+      controller = start_controller()
+      register_node(controller, "node-1")
+      register_instance(controller, "node-1", "inst-1")
+
+      peer_attrs = %{
+        id: "peer-1",
+        instance_id: "inst-1",
+        name: "laptop",
+        allowed_ips: "10.0.0.2/32",
+        address: "10.0.0.2/32"
+      }
+
+      assert {:ok, "peer-1"} = Controller.create_peer(controller, "cmd-peer", peer_attrs)
+
+      assert {:ok, config1} =
+               Controller.store_client_config(
+                 controller,
+                 "cmd-config-1",
+                 "peer-1",
+                 "193.233.91.130:51820"
+               )
+
+      assert {:ok, config2} =
+               Controller.store_client_config(
+                 controller,
+                 "cmd-config-2",
+                 "peer-1",
+                 "1.2.3.4:51820"
+               )
+
+      assert config1 != config2
+      assert config2 =~ "Endpoint = 1.2.3.4:51820"
+      assert Controller.get_client_config(controller, "peer-1") == config2
+    end
+
+    test "command log does not contain secrets" do
+      controller = start_controller()
+      register_node(controller, "node-1")
+      register_instance(controller, "node-1", "inst-1")
+
+      peer_attrs = %{
+        id: "peer-1",
+        instance_id: "inst-1",
+        name: "laptop",
+        allowed_ips: "10.0.0.2/32",
+        address: "10.0.0.2/32"
+      }
+
+      assert {:ok, "peer-1"} = Controller.create_peer(controller, "cmd-peer", peer_attrs)
+
+      assert {:ok, config} =
+               Controller.store_client_config(
+                 controller,
+                 "cmd-config",
+                 "peer-1",
+                 "193.233.91.130:51820"
+               )
+
+      assert config =~ "PrivateKey"
+
+      log = Controller.command_log(controller)
+
+      assert Enum.any?(log, &(&1.type == "store_client_config"))
+
+      refute Enum.any?(log, fn entry ->
+               entry.result =~ "PrivateKey" or entry.result =~ "private"
+             end)
+    end
+  end
+
+  describe "status/1" do
+    test "reports online when agent returns status" do
+      controller = start_controller()
+      register_node(controller, "node-1")
+
+      agent_status = %WGM.Agent.Status{
+        node_id: "node-1",
+        timestamp: DateTime.utc_now(),
+        instances: []
+      }
+
+      FakeAgentAdapter.set_status("node-1", {:ok, agent_status})
+
+      [status] = Controller.status(controller)
+      assert status.node_id == "node-1"
+      assert status.online
+      assert status.agent_status.node_id == "node-1"
+    end
+
+    test "reports offline when agent is unreachable" do
+      controller = start_controller()
+      register_node(controller, "node-1")
+
+      [status] = Controller.status(controller)
+      assert status.node_id == "node-1"
+      refute status.online
+      assert status.agent_status == nil
+    end
+  end
+
+  describe "audit/1" do
+    test "does not contain secrets" do
+      controller = start_controller()
+      register_node(controller, "node-1")
+      register_instance(controller, "node-1", "inst-1")
+
+      peer_attrs = %{
+        id: "peer-1",
+        instance_id: "inst-1",
+        name: "laptop",
+        allowed_ips: "10.0.0.2/32",
+        address: "10.0.0.2/32"
+      }
+
+      assert {:ok, "peer-1"} = Controller.create_peer(controller, "cmd-peer", peer_attrs)
+
+      audit = Controller.audit(controller)
+
+      assert Enum.any?(audit, &(&1.type == "create_peer"))
+
+      refute Enum.any?(audit, fn event ->
+               event.summary =~ "private" or event.summary =~ "key"
+             end)
+    end
+  end
+
+  describe "deletion" do
+    test "delete_node fails when node has instances" do
+      controller = start_controller()
+      register_node(controller, "node-1")
+      register_instance(controller, "node-1", "inst-1")
+
+      assert {:error, "Node has instances"} =
+               Controller.delete_node(controller, "cmd-del", "node-1")
+
+      assert Controller.get_node(controller, "node-1")
+    end
+
+    test "delete_instance fails when instance has peers" do
+      controller = start_controller()
+      register_node(controller, "node-1")
+      register_instance(controller, "node-1", "inst-1")
+
+      peer_attrs = %{
+        id: "peer-1",
+        instance_id: "inst-1",
+        name: "laptop",
+        allowed_ips: "10.0.0.2/32",
+        address: "10.0.0.2/32"
+      }
+
+      assert {:ok, "peer-1"} = Controller.create_peer(controller, "cmd-peer", peer_attrs)
+
+      assert {:error, "Instance has peers"} =
+               Controller.delete_instance(controller, "cmd-del", "inst-1")
+
+      assert Controller.get_instance(controller, "inst-1")
+    end
+
+    test "delete_peer removes peer" do
+      controller = start_controller()
+      register_node(controller, "node-1")
+      register_instance(controller, "node-1", "inst-1")
+
+      peer_attrs = %{
+        id: "peer-1",
+        instance_id: "inst-1",
+        name: "laptop",
+        allowed_ips: "10.0.0.2/32",
+        address: "10.0.0.2/32"
+      }
+
+      assert {:ok, "peer-1"} = Controller.create_peer(controller, "cmd-peer", peer_attrs)
+      assert {:ok, "peer-1"} = Controller.delete_peer(controller, "cmd-del", "peer-1")
+      assert Controller.get_peer(controller, "peer-1") == nil
+    end
+  end
+
+  # Helpers
+
+  defp register_node(controller, node_id) do
+    attrs = %{
+      id: node_id,
+      name: node_id,
+      address: "193.233.91.130",
+      role: :entry
+    }
+
+    assert {:ok, ^node_id} = Controller.register_node(controller, "cmd-#{node_id}", attrs)
+    :ok
+  end
+
+  defp register_instance(controller, node_id, instance_id) do
+    attrs = %{
+      id: instance_id,
+      node_id: node_id,
+      name: "wg1",
+      protocol: :wg,
+      listen_port: 51820,
+      subnet: "10.0.0.0/24",
+      address: "10.0.0.1/24",
+      private_key: "server-priv",
+      public_key: "server-pub"
+    }
+
+    assert {:ok, ^instance_id} =
+             Controller.create_instance(controller, "cmd-#{instance_id}", attrs)
+
+    :ok
+  end
+end
