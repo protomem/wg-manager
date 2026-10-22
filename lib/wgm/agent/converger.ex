@@ -186,6 +186,30 @@ defmodule WGM.Agent.Converger do
          state,
          instance,
          peers,
+         :absent,
+         current_config,
+         _desired_config,
+         interface_state,
+         result
+       ) do
+    # Для :absent сначала опускаем интерфейс по существующему конфигу,
+    # и только потом удаляем/бэкапим файл (см. ревью wgm-65b6323).
+    with :ok <- apply_to_kernel(state, instance, :absent, interface_state),
+         :ok <- backup(state, instance, :absent, current_config),
+         :ok <- write_or_delete_config(state, instance, :absent, nil),
+         :ok <- verify(state, instance, peers, :absent, interface_state) do
+      {:ok, Map.drop(result, [:dry_run])}
+    else
+      {:error, reason} ->
+        _ = rollback(state, instance, :absent, current_config, interface_state)
+        {:error, "#{reason}"}
+    end
+  end
+
+  defp do_apply(
+         state,
+         instance,
+         peers,
          action,
          current_config,
          desired_config,
@@ -289,22 +313,30 @@ defmodule WGM.Agent.Converger do
           {:error, reason} -> {:error, "syncconf failed: #{reason}"}
         end
       after
-        File.rm(stripped_path)
+        File.rm_rf(Path.dirname(stripped_path))
       end
     else
       {:error, reason} -> {:error, "strip failed: #{reason}"}
     end
   end
 
-  defp write_stripped_temp(content, instance_name) do
-    stripped_path =
+  # Внутренний хелпер, публичный только для тестирования прав доступа.
+  @doc false
+  def write_stripped_temp(content, instance_name) do
+    dir =
       Path.join(
         System.tmp_dir!(),
-        "wgm-#{instance_name}-#{:erlang.unique_integer([:positive])}.conf"
+        "wgm-#{instance_name}-#{:erlang.unique_integer([:positive])}"
       )
 
-    case File.write(stripped_path, content) do
-      :ok -> {:ok, stripped_path}
+    stripped_path = Path.join(dir, "stripped.conf")
+
+    with :ok <- File.mkdir_p(dir),
+         :ok <- File.chmod(dir, 0o700),
+         :ok <- File.write(stripped_path, content),
+         :ok <- File.chmod(stripped_path, 0o600) do
+      {:ok, stripped_path}
+    else
       {:error, reason} -> {:error, inspect(reason)}
     end
   end
@@ -326,13 +358,13 @@ defmodule WGM.Agent.Converger do
       {:ok, :down} -> :ok
       {:ok, :unknown} -> verify_absent(state, instance)
       {:ok, :up} -> {:error, "Instance #{instance.name} is still up after stop"}
-      {:error, reason} -> {:error, "Verification failed: #{reason}"}
+      {:error, _reason} -> :ok
     end
   end
 
   defp verify(state, instance, peers, action, _interface_state) when action in [:up, :restart] do
     with {:ok, dump} <- state.adapter.show_dump(instance.protocol, instance.name),
-         {:ok, status} <- parse_dump(dump, instance.protocol),
+         {:ok, status} <- Parser.parse_dump(dump, instance.protocol),
          :ok <- verify_public_key(status, instance),
          :ok <- verify_peers(status, peers) do
       :ok
@@ -347,15 +379,12 @@ defmodule WGM.Agent.Converger do
         :ok
 
       {:ok, dump} ->
-        case parse_dump(dump, instance.protocol) do
+        case Parser.parse_dump(dump, instance.protocol) do
           {:ok, _} -> {:error, "Instance #{instance.name} is still present after removal"}
           {:error, _} -> :ok
         end
     end
   end
-
-  defp parse_dump(dump, :wg), do: Parser.parse_wg_show_dump(dump)
-  defp parse_dump(dump, :awg), do: Parser.parse_awg_show_dump(dump)
 
   defp verify_public_key(status, instance) do
     if status.public_key == instance.public_key do

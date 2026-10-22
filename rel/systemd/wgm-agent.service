@@ -1,13 +1,15 @@
 [Unit]
 Description=WGM agent (converge + observer)
 After=network.target
-Before=wg-quick@.service awg-quick@.service
 
 # Агент применяет сохранённые конфигурации инстансов при своём старте
 # (apply-at-boot). Это обеспечивает автономность узла: туннели поднимаются
-# даже если контроллер недоступен. systemd-юниты wg-quick@/awg-quick@
-# для управляемых WGM инстансов не используются — жизненным циклом
-# управляет сам агент.
+# даже если контроллер недоступен.
+#
+# Управляемые WGM инстансы хранят конфиги в /etc/wireguard/wgm/ и
+# /etc/amnezia/amneziawg/wgm/; шаблонные юниты wg-quick@/awg-quick@ эти
+# пути не подхватывают, поэтому ordering относительно них не требуется.
+# Жизненным циклом туннелей управляет сам агент.
 
 [Service]
 Type=simple

@@ -40,6 +40,19 @@ defmodule WGM.Instance do
     :target_state
   ]
 
+  @doc """
+  Целевое состояние инстанса, к которому приводит действие converge.
+
+  - :up/:restart → :up
+  - :down → :down
+  - :absent → nil (инстанс удаляется)
+  """
+  @spec target_state_for_action(action :: atom()) :: target_state() | nil
+  def target_state_for_action(:up), do: :up
+  def target_state_for_action(:down), do: :down
+  def target_state_for_action(:restart), do: :up
+  def target_state_for_action(:absent), do: nil
+
   defmodule AWGParams do
     @moduledoc """
     Параметры маскировки AmneziaWG. Параметры S1–S4, H1–H4 и HeaderProtectionKey

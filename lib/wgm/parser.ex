@@ -67,6 +67,14 @@ defmodule WGM.Parser do
     parse_dump(dump, &parse_awg_device/1, :awg)
   end
 
+  @doc """
+  Парсит вывод `wg/awg show dump` в зависимости от протокола.
+  """
+  @spec parse_dump(String.t(), WGM.Instance.protocol()) ::
+          {:ok, wg_status() | awg_status()} | {:error, String.t()}
+  def parse_dump(dump, :wg), do: parse_wg_show_dump(dump)
+  def parse_dump(dump, :awg), do: parse_awg_show_dump(dump)
+
   defp parse_dump(dump, device_parser, protocol) do
     lines = normalize_lines(dump)
 

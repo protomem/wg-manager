@@ -121,7 +121,25 @@ defmodule WGM.Agent.ConvergerTest do
       assert {:ok, "old-config\n"} = FakeConfigStore.read_config(:wg, "wg1")
     end
 
-    test "is no-op when interface is already absent" do
+    test "succeeds verification after real down without rollback" do
+      instance = build_instance("wg1", :wg)
+      FakeKeyStore.set_private_key(:wg, "inst-wg1", "server-private-key")
+      FakeConfigStore.set_config(:wg, "wg1", "old-config\n")
+
+      FakeAdapter.set_interface_state("wg1", :up)
+
+      state = build_state()
+
+      assert {:ok, %{action: :down, changed: true}} =
+               Converger.converge(state, instance, [], action: :down, confirm: true)
+
+      # Интерфейс удалён, конфиг на месте, rollback не вызывался.
+      assert [{:down, :wg, "wg1", "/fake/wg/wg1.conf"}] = FakeAdapter.calls()
+      assert {:ok, "old-config\n"} = FakeConfigStore.read_config(:wg, "wg1")
+      assert FakeConfigStore.backups(:wg, "wg1") == []
+    end
+
+    test "is no-op when interface has already been removed" do
       instance = build_instance("wg1", :wg)
       FakeKeyStore.set_private_key(:wg, "inst-wg1", "server-private-key")
 
@@ -194,6 +212,24 @@ defmodule WGM.Agent.ConvergerTest do
       assert [{:down, :wg, "wg1", "/fake/wg/wg1.conf"}] = FakeAdapter.calls()
     end
 
+    test "downs interface using existing config before deleting it" do
+      instance = build_instance("wg1", :wg)
+      FakeConfigStore.set_config(:wg, "wg1", "old-config\n")
+
+      FakeAdapter.set_interface_state("wg1", :up)
+      FakeAdapter.set_dump(:wg, "wg1", "")
+
+      state = build_state()
+
+      assert {:ok, %{action: :absent, changed: true}} =
+               Converger.converge(state, instance, [], action: :absent, confirm: true)
+
+      # down должен был вызваться по существующему пути; после converge конфиг удалён.
+      assert [{:down, :wg, "wg1", "/fake/wg/wg1.conf"}] = FakeAdapter.calls()
+      assert FakeConfigStore.read_config(:wg, "wg1") == {:error, :enoent}
+      assert FakeConfigStore.last_backup(:wg, "wg1") == "old-config\n"
+    end
+
     test "is no-op when config and interface are already absent" do
       instance = build_instance("wg1", :wg)
 
@@ -220,6 +256,20 @@ defmodule WGM.Agent.ConvergerTest do
 
       assert {:error, "Instance has peers"} =
                Converger.converge(build_state(), instance, [peer], action: :absent, confirm: true)
+    end
+  end
+
+  describe "write_stripped_temp/2" do
+    test "creates temp file with 0600 and directory with 0700" do
+      assert {:ok, path} = Converger.write_stripped_temp("private-key-data", "wg1")
+
+      try do
+        assert File.exists?(path)
+        assert File.stat!(path).mode |> Bitwise.band(0o777) == 0o600
+        assert File.stat!(Path.dirname(path)).mode |> Bitwise.band(0o777) == 0o700
+      after
+        File.rm_rf(Path.dirname(path))
+      end
     end
   end
 

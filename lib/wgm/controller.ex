@@ -541,11 +541,10 @@ defmodule WGM.Controller do
   defp persist_target_state(_conn, _instance, _action, true), do: :ok
 
   defp persist_target_state(conn, instance, action, false) do
-    case action do
+    case Instance.target_state_for_action(action) do
       :up -> Repo.update_instance_target_state(conn, instance.id, :up)
-      :restart -> Repo.update_instance_target_state(conn, instance.id, :up)
       :down -> Repo.update_instance_target_state(conn, instance.id, :down)
-      :absent -> delete_instance_record(conn, instance.id)
+      nil -> delete_instance_record(conn, instance.id)
     end
   end
 

@@ -233,8 +233,9 @@ defmodule WGM.AgentTest do
       assert {:ok, %{action: :down, changed: true}} =
                Agent.apply_instance(agent, instance, [], action: :down, confirm: true)
 
+      # wg-quick down удаляет интерфейс; наблюдение видит отсутствие.
       status = Agent.status(agent)
-      assert [%{instance_id: "inst-state", interface_state: :down}] = status.instances
+      assert [%{instance_id: "inst-state", interface_state: :unknown}] = status.instances
 
       assert {:ok, %{action: :absent, changed: true}} =
                Agent.apply_instance(agent, instance, [], action: :absent, confirm: true)
@@ -243,6 +244,43 @@ defmodule WGM.AgentTest do
 
       # Инстанс удалён из state.instances — наблюдение его больше не видит.
       assert status.instances == []
+    end
+
+    test "adds new instance to state.instances after apply" do
+      node = %Node{id: "node-new", name: "entry", address: "193.233.91.130", role: :entry}
+
+      instance = %Instance{
+        id: "inst-new",
+        node_id: "node-new",
+        name: "wgnew",
+        protocol: :wg,
+        listen_port: 51830,
+        subnet: "10.10.0.0/24",
+        private_key: nil,
+        public_key: "pub",
+        address: "10.10.0.1/24",
+        target_state: :configured
+      }
+
+      FakeKeyStore.set_private_key(:wg, "inst-new", "priv")
+      FakeAdapter.set_dump(:wg, "wgnew", "priv\tpub\t51830\toff\n")
+      FakeAdapter.set_interface_state("wgnew", :up)
+
+      {:ok, agent} =
+        Agent.start_link(
+          node: node,
+          instances: [],
+          adapter: FakeAdapter,
+          key_store: FakeKeyStore,
+          config_store: FakeConfigStore,
+          read_only: false
+        )
+
+      assert {:ok, %{action: :up, changed: true}} =
+               Agent.apply_instance(agent, instance, [], action: :up)
+
+      status = Agent.status(agent)
+      assert [%{instance_id: "inst-new", interface_state: :up}] = status.instances
     end
 
     test "applies saved configs at boot for instances with target_state :up" do
@@ -274,6 +312,38 @@ defmodule WGM.AgentTest do
         )
 
       assert [{:up, :wg, "wgboot", "/fake/wg/wgboot.conf"}] = FakeAdapter.calls()
+    end
+
+    test "skips interfaces already up at boot" do
+      node = %Node{id: "node-boot-up", name: "entry", address: "193.233.91.130", role: :entry}
+
+      instance = %Instance{
+        id: "inst-boot-up",
+        node_id: "node-boot-up",
+        name: "wgbootup",
+        protocol: :wg,
+        listen_port: 51830,
+        subnet: "10.10.0.0/24",
+        private_key: nil,
+        public_key: "pub",
+        address: "10.10.0.1/24",
+        target_state: :up
+      }
+
+      FakeConfigStore.set_config(:wg, "wgbootup", "[Interface]\nPrivateKey = priv\n")
+      FakeAdapter.set_interface_state("wgbootup", :up)
+
+      {:ok, _agent} =
+        Agent.start_link(
+          node: node,
+          instances: [instance],
+          adapter: FakeAdapter,
+          key_store: FakeKeyStore,
+          config_store: FakeConfigStore,
+          read_only: false
+        )
+
+      assert FakeAdapter.calls() == []
     end
 
     test "does not apply configs at boot in read-only mode" do

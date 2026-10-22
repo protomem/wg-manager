@@ -53,7 +53,7 @@ defmodule WGM.Agent.Observer do
     }
   end
 
-  defp parse_dump_result({:ok, dump}, protocol), do: parse_dump(dump, protocol)
+  defp parse_dump_result({:ok, dump}, protocol), do: Parser.parse_dump(dump, protocol)
   defp parse_dump_result({:error, _}, _protocol), do: {:error, :no_dump}
 
   defp build_error(_state, _dump, {:error, reason}) when is_binary(reason), do: reason
@@ -67,9 +67,6 @@ defmodule WGM.Agent.Observer do
 
   defp interface_state_or_unknown({:ok, state}), do: state
   defp interface_state_or_unknown({:error, _}), do: :unknown
-
-  defp parse_dump(dump, :wg), do: Parser.parse_wg_show_dump(dump)
-  defp parse_dump(dump, :awg), do: Parser.parse_awg_show_dump(dump)
 
   # Статус, отправляемый с узла, не должен содержать приватных ключей
   # живых интерфейсов (см. ADR «Секреты» и историю 32).

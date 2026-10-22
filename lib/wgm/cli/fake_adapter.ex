@@ -94,7 +94,8 @@ if Mix.env() != :prod do
     def down(protocol, interface, config_path) do
       case record_call({:down, protocol, interface, config_path}) do
         :ok ->
-          set_interface_state(interface, :down)
+          # wg-quick down удаляет интерфейс; последующий ip link show даёт ошибку.
+          :ets.delete(__MODULE__, {:state, interface})
           :ok
 
         other ->

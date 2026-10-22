@@ -10,7 +10,7 @@ defmodule WGM.Agent do
 
   alias WGM.Agent.{Converger, Observer, Status}
   alias WGM.CLI.Adapter
-  alias WGM.Keygen
+  alias WGM.{Instance, Keygen}
 
   defstruct [
     :node,
@@ -160,16 +160,13 @@ defmodule WGM.Agent do
   defp apply_saved_configs_at_boot(%{read_only: true} = state), do: state
 
   defp apply_saved_configs_at_boot(state) do
-    new_instances =
-      Enum.map(state.instances, fn instance ->
-        if instance.target_state == :up do
-          apply_saved_instance(state, instance)
-        else
-          instance
-        end
-      end)
+    Enum.each(state.instances, fn instance ->
+      if instance.target_state == :up do
+        apply_saved_instance(state, instance)
+      end
+    end)
 
-    %{state | instances: new_instances}
+    state
   end
 
   defp apply_saved_instance(state, instance) do
@@ -177,14 +174,22 @@ defmodule WGM.Agent do
 
     case state.config_store.read_config(instance.protocol, instance.name) do
       {:ok, _config} ->
-        case state.adapter.up(instance.protocol, instance.name, config_path) do
-          :ok ->
+        case state.adapter.interface_state(instance.name) do
+          {:ok, :up} ->
             instance
 
-          {:error, reason} ->
-            Logger.warning("Failed to apply saved config for #{instance.name} at boot: #{reason}")
+          _ ->
+            case state.adapter.up(instance.protocol, instance.name, config_path) do
+              :ok ->
+                instance
 
-            instance
+              {:error, reason} ->
+                Logger.warning(
+                  "Failed to apply saved config for #{instance.name} at boot: #{reason}"
+                )
+
+                instance
+            end
         end
 
       {:error, :enoent} ->
@@ -207,17 +212,22 @@ defmodule WGM.Agent do
        when action in [:up, :down, :restart] do
     target_state = action_to_target_state(action)
 
-    new_instances =
-      Enum.map(state.instances, fn
-        %{id: id} when id == instance.id -> %{instance | target_state: target_state}
-        other -> other
-      end)
+    if Enum.any?(state.instances, &(&1.id == instance.id)) do
+      new_instances =
+        Enum.map(state.instances, fn
+          %{id: id} when id == instance.id -> %{instance | target_state: target_state}
+          other -> other
+        end)
 
-    %{state | instances: new_instances}
+      %{state | instances: new_instances}
+    else
+      # Новый инстанс, созданный через apply_instance(:up/:restart), должен
+      # попасть в наблюдение агента без рестарта (см. ревью wgm-65b6323).
+      %{state | instances: [%{instance | target_state: target_state} | state.instances]}
+    end
   end
 
   defp update_instances_after_apply(state, _instance, _result, _action), do: state
 
-  defp action_to_target_state(:restart), do: :up
-  defp action_to_target_state(action), do: action
+  defp action_to_target_state(action), do: Instance.target_state_for_action(action)
 end
