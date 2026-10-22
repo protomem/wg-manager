@@ -2,11 +2,13 @@ defmodule WGM.AgentTest do
   use ExUnit.Case
 
   alias WGM.{Agent, Agent.Observer, Agent.Status, CLI.FakeAdapter, Instance, Node}
+  alias WGM.Agent.ConfigStore.Fake, as: FakeConfigStore
   alias WGM.Agent.KeyStore.Fake, as: FakeKeyStore
 
   setup do
     FakeAdapter.start()
     FakeKeyStore.start()
+    FakeConfigStore.start()
     :ok
   end
 
@@ -122,6 +124,187 @@ defmodule WGM.AgentTest do
 
       assert {:error, "read-only mode"} = Agent.generate_keypair(agent, "inst-ro", :wg)
       assert FakeKeyStore.read_private_key(:wg, "inst-ro") == {:error, :enoent}
+    end
+  end
+
+  describe "Agent.apply_instance/4" do
+    test "applies converge when not in read-only mode" do
+      node = %Node{id: "node-apply", name: "entry", address: "193.233.91.130", role: :entry}
+
+      instance = %Instance{
+        id: "inst-apply",
+        node_id: "node-apply",
+        name: "wgapply",
+        protocol: :wg,
+        listen_port: 51830,
+        subnet: "10.10.0.0/24",
+        private_key: nil,
+        public_key: "pub",
+        address: "10.10.0.1/24"
+      }
+
+      FakeKeyStore.set_private_key(:wg, "inst-apply", "priv")
+      FakeAdapter.set_dump(:wg, "wgapply", "priv\tpub\t51830\toff\n")
+      FakeAdapter.set_interface_state("wgapply", :up)
+
+      {:ok, agent} =
+        Agent.start_link(
+          node: node,
+          instances: [],
+          adapter: FakeAdapter,
+          key_store: FakeKeyStore,
+          config_store: FakeConfigStore,
+          read_only: false
+        )
+
+      assert {:ok, %{action: :up, changed: true}} =
+               Agent.apply_instance(agent, instance, [], action: :up)
+
+      assert {:ok, config} = FakeConfigStore.read_config(:wg, "wgapply")
+      assert config =~ "PrivateKey = priv"
+    end
+
+    test "refuses to apply in read-only mode" do
+      node = %Node{id: "node-ro-apply", name: "entry", address: "193.233.91.130", role: :entry}
+
+      instance = %Instance{
+        id: "inst-ro-apply",
+        node_id: "node-ro-apply",
+        name: "wgro",
+        protocol: :wg,
+        listen_port: 51830,
+        subnet: "10.10.0.0/24",
+        private_key: nil,
+        public_key: "pub",
+        address: "10.10.0.1/24"
+      }
+
+      {:ok, agent} =
+        Agent.start_link(
+          node: node,
+          instances: [],
+          adapter: FakeAdapter,
+          key_store: FakeKeyStore,
+          config_store: FakeConfigStore,
+          read_only: true
+        )
+
+      assert {:error, "read-only mode"} = Agent.apply_instance(agent, instance, [], action: :up)
+    end
+
+    test "updates state.instances after apply" do
+      node = %Node{id: "node-state", name: "entry", address: "193.233.91.130", role: :entry}
+
+      instance = %Instance{
+        id: "inst-state",
+        node_id: "node-state",
+        name: "wgstate",
+        protocol: :wg,
+        listen_port: 51830,
+        subnet: "10.10.0.0/24",
+        private_key: nil,
+        public_key: "pub",
+        address: "10.10.0.1/24",
+        target_state: :configured
+      }
+
+      FakeKeyStore.set_private_key(:wg, "inst-state", "priv")
+      FakeAdapter.set_dump(:wg, "wgstate", "priv\tpub\t51830\toff\n")
+      FakeAdapter.set_interface_state("wgstate", :up)
+
+      {:ok, agent} =
+        Agent.start_link(
+          node: node,
+          instances: [instance],
+          adapter: FakeAdapter,
+          key_store: FakeKeyStore,
+          config_store: FakeConfigStore,
+          read_only: false
+        )
+
+      assert {:ok, %{action: :up, changed: true}} =
+               Agent.apply_instance(agent, instance, [], action: :up)
+
+      status = Agent.status(agent)
+      assert [%{instance_id: "inst-state", interface_state: :up}] = status.instances
+
+      FakeAdapter.set_dump(:wg, "wgstate", "")
+
+      assert {:ok, %{action: :down, changed: true}} =
+               Agent.apply_instance(agent, instance, [], action: :down, confirm: true)
+
+      status = Agent.status(agent)
+      assert [%{instance_id: "inst-state", interface_state: :down}] = status.instances
+
+      assert {:ok, %{action: :absent, changed: true}} =
+               Agent.apply_instance(agent, instance, [], action: :absent, confirm: true)
+
+      status = Agent.status(agent)
+
+      # Инстанс удалён из state.instances — наблюдение его больше не видит.
+      assert status.instances == []
+    end
+
+    test "applies saved configs at boot for instances with target_state :up" do
+      node = %Node{id: "node-boot", name: "entry", address: "193.233.91.130", role: :entry}
+
+      instance = %Instance{
+        id: "inst-boot",
+        node_id: "node-boot",
+        name: "wgboot",
+        protocol: :wg,
+        listen_port: 51830,
+        subnet: "10.10.0.0/24",
+        private_key: nil,
+        public_key: "pub",
+        address: "10.10.0.1/24",
+        target_state: :up
+      }
+
+      FakeConfigStore.set_config(:wg, "wgboot", "[Interface]\nPrivateKey = priv\n")
+
+      {:ok, _agent} =
+        Agent.start_link(
+          node: node,
+          instances: [instance],
+          adapter: FakeAdapter,
+          key_store: FakeKeyStore,
+          config_store: FakeConfigStore,
+          read_only: false
+        )
+
+      assert [{:up, :wg, "wgboot", "/fake/wg/wgboot.conf"}] = FakeAdapter.calls()
+    end
+
+    test "does not apply configs at boot in read-only mode" do
+      node = %Node{id: "node-ro-boot", name: "entry", address: "193.233.91.130", role: :entry}
+
+      instance = %Instance{
+        id: "inst-ro-boot",
+        node_id: "node-ro-boot",
+        name: "wgroboot",
+        protocol: :wg,
+        listen_port: 51830,
+        subnet: "10.10.0.0/24",
+        private_key: nil,
+        public_key: "pub",
+        address: "10.10.0.1/24",
+        target_state: :up
+      }
+
+      FakeConfigStore.set_config(:wg, "wgroboot", "[Interface]\nPrivateKey = priv\n")
+
+      {:ok, _agent} =
+        Agent.start_link(
+          node: node,
+          instances: [instance],
+          adapter: FakeAdapter,
+          key_store: FakeKeyStore,
+          config_store: FakeConfigStore,
+          read_only: true
+        )
+
+      assert FakeAdapter.calls() == []
     end
   end
 

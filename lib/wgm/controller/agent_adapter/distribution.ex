@@ -24,6 +24,11 @@ defmodule WGM.Controller.AgentAdapter.Distribution do
     call_agent(address, WGM.Agent, :generate_keypair, [:wgm_agent, instance_id, protocol])
   end
 
+  @impl true
+  def apply_instance(%WGMNode{address: address}, instance, peers, opts) do
+    call_agent(address, WGM.Agent, :apply_instance, [:wgm_agent, instance, peers, opts])
+  end
+
   defp call_agent(address, module, function, args) do
     node_name = node_name(address)
 

@@ -1,6 +1,6 @@
 [Unit]
 Description=WGM controller
-After=network.target wgm-agent.service
+After=network.target
 
 [Service]
 Type=simple

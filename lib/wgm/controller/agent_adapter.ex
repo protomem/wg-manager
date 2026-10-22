@@ -17,4 +17,15 @@ defmodule WGM.Controller.AgentAdapter do
   """
   @callback generate_keypair(Node.t(), instance_id :: String.t(), WGM.CLI.Adapter.protocol()) ::
               {:ok, String.t()} | {:error, String.t()}
+
+  @doc """
+  Просит агента узла применить желаемое состояние инстанса (converge).
+  """
+  @callback apply_instance(
+              Node.t(),
+              WGM.Instance.t(),
+              [WGM.Peer.t()],
+              keyword()
+            ) ::
+              {:ok, map()} | {:error, String.t()}
 end

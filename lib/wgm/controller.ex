@@ -76,6 +76,36 @@ defmodule WGM.Controller do
     GenServer.call(controller, {:delete_instance, command_id, instance_id})
   end
 
+  @spec converge_instance(GenServer.server(), command_id(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, String.t()}
+  def converge_instance(controller, command_id, instance_id, opts \\ []) do
+    GenServer.call(controller, {:converge_instance, command_id, instance_id, opts})
+  end
+
+  @spec start_instance(GenServer.server(), command_id(), String.t()) ::
+          {:ok, map()} | {:error, String.t()}
+  def start_instance(controller, command_id, instance_id) do
+    converge_instance(controller, command_id, instance_id, action: :up)
+  end
+
+  @spec stop_instance(GenServer.server(), command_id(), String.t(), boolean()) ::
+          {:ok, map()} | {:error, String.t()}
+  def stop_instance(controller, command_id, instance_id, confirm) do
+    converge_instance(controller, command_id, instance_id, action: :down, confirm: confirm)
+  end
+
+  @spec restart_instance(GenServer.server(), command_id(), String.t(), boolean()) ::
+          {:ok, map()} | {:error, String.t()}
+  def restart_instance(controller, command_id, instance_id, confirm) do
+    converge_instance(controller, command_id, instance_id, action: :restart, confirm: confirm)
+  end
+
+  @spec delete_instance(GenServer.server(), command_id(), String.t(), boolean()) ::
+          {:ok, map()} | {:error, String.t()}
+  def delete_instance(controller, command_id, instance_id, confirm) do
+    converge_instance(controller, command_id, instance_id, action: :absent, confirm: confirm)
+  end
+
   @spec list_peers(GenServer.server(), String.t() | nil) :: [Peer.t()]
   def list_peers(controller, instance_id \\ nil) do
     GenServer.call(controller, {:list_peers, instance_id})
@@ -240,6 +270,44 @@ defmodule WGM.Controller do
           {:error, reason} -> {:error, reason}
         end
       end)
+
+    {:reply, result, state}
+  end
+
+  def handle_call({:converge_instance, command_id, instance_id, opts}, _from, state) do
+    action = opts[:action] || :up
+    confirm = Keyword.get(opts, :confirm, false)
+    dry_run = Keyword.get(opts, :dry_run, false)
+
+    summary = "converge instance #{instance_id} action #{action}"
+
+    result =
+      execute_command(
+        state,
+        command_id,
+        "converge_instance",
+        instance_id,
+        summary,
+        fn ->
+          with {:ok, instance, node} <- fetch_instance_and_node(state.conn, instance_id),
+               peers = Repo.list_peers(state.conn, instance_id),
+               :ok <- validate_converge_preconditions(action, peers),
+               {:ok, result} <-
+                 state.agent_adapter.apply_instance(node, instance, peers,
+                   action: action,
+                   confirm: confirm,
+                   dry_run: dry_run
+                 ),
+               :ok <- persist_target_state(state.conn, instance, action, dry_run) do
+            {:ok, result}
+          else
+            nil -> {:error, "Instance not found"}
+            {:error, reason} -> {:error, reason}
+          end
+        end,
+        &encode_converge_result/1,
+        &replay_converge_result/1
+      )
 
     {:reply, result, state}
   end
@@ -430,10 +498,61 @@ defmodule WGM.Controller do
   defp to_text(value) when is_binary(value), do: value
   defp to_text(value), do: inspect(value)
 
+  defp encode_converge_result(result) do
+    result
+    |> :erlang.term_to_binary()
+    |> Base.encode64()
+  end
+
+  defp replay_converge_result(%{status: "ok", result: encoded}) do
+    encoded
+    |> Base.decode64!()
+    |> :erlang.binary_to_term()
+    |> then(&{:ok, &1})
+  end
+
+  defp replay_converge_result(%{status: "error", result: reason}) do
+    {:error, reason}
+  end
+
   defp fetch_node(conn, node_id) do
     case Repo.get_node(conn, node_id) do
       nil -> {:error, "Node not found"}
       node -> {:ok, node}
+    end
+  end
+
+  defp validate_converge_preconditions(:absent, [_ | _]), do: {:error, "Instance has peers"}
+  defp validate_converge_preconditions(_action, _peers), do: :ok
+
+  defp fetch_instance_and_node(conn, instance_id) do
+    case Repo.get_instance(conn, instance_id) do
+      nil ->
+        nil
+
+      %Instance{node_id: node_id} = instance ->
+        case Repo.get_node(conn, node_id) do
+          nil -> {:error, "Node not found for instance"}
+          node -> {:ok, instance, node}
+        end
+    end
+  end
+
+  defp persist_target_state(_conn, _instance, _action, true), do: :ok
+
+  defp persist_target_state(conn, instance, action, false) do
+    case action do
+      :up -> Repo.update_instance_target_state(conn, instance.id, :up)
+      :restart -> Repo.update_instance_target_state(conn, instance.id, :up)
+      :down -> Repo.update_instance_target_state(conn, instance.id, :down)
+      :absent -> delete_instance_record(conn, instance.id)
+    end
+  end
+
+  defp delete_instance_record(conn, instance_id) do
+    case Repo.list_peers(conn, instance_id) do
+      [] -> Repo.delete_instance(conn, instance_id)
+      [_ | _] -> {:error, "Instance has peers"}
     end
   end
 
@@ -464,7 +583,8 @@ defmodule WGM.Controller do
         address: attrs[:address],
         dns: attrs[:dns],
         mtu: attrs[:mtu],
-        awg_params: awg_params
+        awg_params: awg_params,
+        target_state: :configured
       }
 
       {:ok, instance, :new}

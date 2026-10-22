@@ -313,6 +313,44 @@ defmodule WGM.ConfigGeneratorTest do
     }
   end
 
+  describe "strip_quick_keys/1" do
+    test "removes wg-quick-only keys" do
+      config = """
+      [Interface]
+      PrivateKey = server-private-key
+      Address = 10.0.0.1/24
+      ListenPort = 51820
+      DNS = 1.1.1.1
+      MTU = 1420
+      Table = off
+      PreUp = echo preup
+      PostUp = echo postup
+      PreDown = echo predown
+      PostDown = echo postdown
+      SaveConfig = true
+
+      [Peer]
+      PublicKey = peer-public-key
+      AllowedIPs = 10.0.0.2/32
+      """
+
+      stripped = ConfigGenerator.strip_quick_keys(config)
+
+      assert stripped =~ "PrivateKey = server-private-key"
+      assert stripped =~ "ListenPort = 51820"
+      assert stripped =~ "PublicKey = peer-public-key"
+      refute stripped =~ "Address ="
+      refute stripped =~ "DNS ="
+      refute stripped =~ "MTU ="
+      refute stripped =~ "Table ="
+      refute stripped =~ "PreUp ="
+      refute stripped =~ "PostUp ="
+      refute stripped =~ "PreDown ="
+      refute stripped =~ "PostDown ="
+      refute stripped =~ "SaveConfig ="
+    end
+  end
+
   defp disabled_awg_params do
     %Instance.AWGParams{
       jc: 0,

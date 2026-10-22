@@ -36,6 +36,20 @@ defmodule WGM.Controller.AgentAdapter.Fake do
     :ok
   end
 
+  @spec set_apply_result(String.t(), String.t(), {:ok, map()} | {:error, String.t()}) :: :ok
+  def set_apply_result(node_id, instance_id, result) do
+    :ets.insert(__MODULE__, {{:apply, node_id, instance_id}, result})
+    :ok
+  end
+
+  @spec calls() :: [tuple()]
+  def calls do
+    case :ets.lookup(__MODULE__, :calls) do
+      [{_, calls}] -> Enum.reverse(calls)
+      [] -> []
+    end
+  end
+
   @impl true
   def status(%Node{id: node_id}) do
     case :ets.lookup(__MODULE__, {:status, node_id}) do
@@ -50,5 +64,25 @@ defmodule WGM.Controller.AgentAdapter.Fake do
       [{_, public_key}] -> {:ok, public_key}
       [] -> {:error, "No keypair fixture for #{node_id}/#{instance_id}/#{protocol}"}
     end
+  end
+
+  @impl true
+  def apply_instance(%Node{id: node_id}, %WGM.Instance{id: instance_id}, _peers, opts) do
+    record_call({:apply_instance, node_id, instance_id, opts[:action]})
+
+    case :ets.lookup(__MODULE__, {:apply, node_id, instance_id}) do
+      [{_, result}] -> result
+      [] -> {:error, "No apply fixture for #{node_id}/#{instance_id}"}
+    end
+  end
+
+  defp record_call(call) do
+    calls =
+      case :ets.lookup(__MODULE__, :calls) do
+        [{_, list}] -> [call | list]
+        [] -> [call]
+      end
+
+    :ets.insert(__MODULE__, {:calls, calls})
   end
 end

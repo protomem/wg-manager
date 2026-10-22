@@ -183,4 +183,45 @@ defmodule WGM.ConfigGenerator do
     do: not AWGParamsValidator.masking_disabled?(instance.awg_params)
 
   defp awg_security?(%Instance{protocol: :wg}), do: false
+
+  @quick_keys [
+    "Address",
+    "DNS",
+    "MTU",
+    "Table",
+    "PreUp",
+    "PostUp",
+    "PreDown",
+    "PostDown",
+    "SaveConfig"
+  ]
+
+  @doc """
+  Убирает из конфига ключи, которые понимает только `wg-quick`/`awg-quick`,
+  оставляя содержимое, пригодное для `wg setconf`/`wg syncconf`.
+
+  Эквивалент `wg-quick strip <interface>`, но работает с конфигами в любом
+  пути (в т.ч. `/etc/wireguard/wgm/`).
+  """
+  @spec strip_quick_keys(config_string()) :: config_string()
+  def strip_quick_keys(config) do
+    config
+    |> String.split("\n", trim: false)
+    |> Enum.reject(fn line ->
+      trimmed = String.trim(line)
+
+      Enum.any?(@quick_keys, fn key ->
+        String.starts_with?(trimmed, "#{key} =") or trimmed == "#{key}"
+      end)
+    end)
+    |> Enum.join("\n")
+    |> normalize_empty_lines()
+  end
+
+  defp normalize_empty_lines(config) do
+    config
+    |> String.replace(~r/\n{3,}/, "\n\n")
+    |> String.trim_trailing()
+    |> Kernel.<>("\n")
+  end
 end

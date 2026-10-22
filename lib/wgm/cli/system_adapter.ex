@@ -51,6 +51,31 @@ defmodule WGM.CLI.SystemAdapter do
     run_command("ip", ["link", "show", interface], &parse_interface_state/1)
   end
 
+  @impl true
+  def syncconf(protocol, interface, config_path) do
+    run_command(bin(protocol), ["syncconf", interface, config_path], fn _ -> :ok end)
+  end
+
+  @impl true
+  def strip_config(_protocol, _interface, config_path) do
+    case File.read(config_path) do
+      {:ok, content} -> {:ok, WGM.ConfigGenerator.strip_quick_keys(content)}
+      {:error, reason} -> {:error, inspect(reason)}
+    end
+  end
+
+  @impl true
+  def up(protocol, _interface, config_path) do
+    quick_bin = quick_bin(protocol)
+    run_command(quick_bin, ["up", config_path], fn _ -> :ok end)
+  end
+
+  @impl true
+  def down(protocol, _interface, config_path) do
+    quick_bin = quick_bin(protocol)
+    run_command(quick_bin, ["down", config_path], fn _ -> :ok end)
+  end
+
   defp parse_interface_state(output) do
     flags = interface_flags(output)
 
@@ -71,6 +96,9 @@ defmodule WGM.CLI.SystemAdapter do
 
   defp bin(:wg), do: "wg"
   defp bin(:awg), do: "awg"
+
+  defp quick_bin(:wg), do: "wg-quick"
+  defp quick_bin(:awg), do: "awg-quick"
 
   defp run_command(cmd, args, output_handler \\ &{:ok, String.trim(&1)}) do
     case safe_cmd(cmd, args, []) do

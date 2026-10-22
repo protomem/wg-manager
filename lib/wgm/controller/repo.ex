@@ -28,7 +28,10 @@ defmodule WGM.Controller.Repo do
 
   @spec migrate(Sqlite3.db()) :: :ok | {:error, Sqlite3.reason()}
   def migrate(conn) do
-    Sqlite3.execute(conn, schema())
+    with :ok <- Sqlite3.execute(conn, schema()),
+         :ok <- add_instance_state_column(conn) do
+      :ok
+    end
   end
 
   # Nodes
@@ -94,8 +97,8 @@ defmodule WGM.Controller.Repo do
         private_key, public_key, address, dns, mtu,
         jc, jmin, jmax, s1, s2, s3, s4,
         h1, h2, h3, h4, i1, i2, i3, i4, i5,
-        header_protection_key, inserted_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        header_protection_key, state, inserted_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       """,
       [
         instance.id,
@@ -126,6 +129,7 @@ defmodule WGM.Controller.Repo do
         awg && awg.i4,
         awg && awg.i5,
         awg && awg.header_protection_key,
+        to_string(instance.target_state || :configured),
         now,
         now
       ]
@@ -156,6 +160,18 @@ defmodule WGM.Controller.Repo do
   @spec delete_instance(Sqlite3.db(), String.t()) :: :ok | {:error, Sqlite3.reason()}
   def delete_instance(conn, id) do
     execute(conn, "DELETE FROM instances WHERE id = ?", [id])
+  end
+
+  # DB-столбец оставлен `state` для совместимости существующих баз;
+  # в Elixir-коде это `Instance.target_state`.
+  @spec update_instance_target_state(Sqlite3.db(), String.t(), Instance.target_state()) ::
+          :ok | {:error, Sqlite3.reason()}
+  def update_instance_target_state(conn, id, target_state) do
+    execute(
+      conn,
+      "UPDATE instances SET state = ?, updated_at = ? WHERE id = ?",
+      [to_string(target_state), now(), id]
+    )
   end
 
   # Peers
@@ -361,6 +377,7 @@ defmodule WGM.Controller.Repo do
       i4 INTEGER,
       i5 INTEGER,
       header_protection_key TEXT,
+      state TEXT NOT NULL DEFAULT 'configured',
       inserted_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -410,6 +427,22 @@ defmodule WGM.Controller.Repo do
     """
   end
 
+  defp add_instance_state_column(conn) do
+    columns =
+      query(conn, "PRAGMA table_info(instances)")
+      |> Enum.map(fn [_cid, name, _type, _notnull, _dflt, _pk] -> name end)
+
+    if "state" in columns do
+      :ok
+    else
+      execute(
+        conn,
+        "ALTER TABLE instances ADD COLUMN state TEXT NOT NULL DEFAULT 'configured'",
+        []
+      )
+    end
+  end
+
   # Helpers
 
   defp instance_select do
@@ -419,7 +452,7 @@ defmodule WGM.Controller.Repo do
       private_key, public_key, address, dns, mtu,
       jc, jmin, jmax, s1, s2, s3, s4,
       h1, h2, h3, h4, i1, i2, i3, i4, i5,
-      header_protection_key, inserted_at, updated_at
+      header_protection_key, state, inserted_at, updated_at
     FROM instances
     """
   end
@@ -472,7 +505,8 @@ defmodule WGM.Controller.Repo do
          i3,
          i4,
          i5,
-         header_protection_key | _
+         header_protection_key,
+         state | _
        ]) do
     %Instance{
       id: id,
@@ -505,7 +539,8 @@ defmodule WGM.Controller.Repo do
           i4,
           i5,
           header_protection_key
-        )
+        ),
+      target_state: parse_state(state)
     }
   end
 
@@ -660,4 +695,8 @@ defmodule WGM.Controller.Repo do
   end
 
   defp to_atom(string) when is_binary(string), do: String.to_atom(string)
+
+  defp parse_state("up"), do: :up
+  defp parse_state("down"), do: :down
+  defp parse_state(_), do: :configured
 end

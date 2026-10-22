@@ -517,6 +517,139 @@ defmodule WGM.ControllerTest do
     end
   end
 
+  describe "converge_instance/4" do
+    test "start_instance updates state to up and applies on agent" do
+      controller = start_controller()
+      register_node(controller, "node-1")
+      register_instance(controller, "node-1", "inst-1")
+
+      FakeAgentAdapter.set_apply_result("node-1", "inst-1", {:ok, %{action: :up, changed: true}})
+
+      assert {:ok, %{action: :up, changed: true}} =
+               Controller.start_instance(controller, "cmd-start", "inst-1")
+
+      assert %Instance{target_state: :up} = Controller.get_instance(controller, "inst-1")
+    end
+
+    test "stop_instance updates state to down" do
+      controller = start_controller()
+      register_node(controller, "node-1")
+      register_instance(controller, "node-1", "inst-1")
+
+      FakeAgentAdapter.set_apply_result(
+        "node-1",
+        "inst-1",
+        {:ok, %{action: :down, changed: true}}
+      )
+
+      assert {:ok, %{action: :down, changed: true}} =
+               Controller.stop_instance(controller, "cmd-stop", "inst-1", true)
+
+      assert %Instance{target_state: :down} = Controller.get_instance(controller, "inst-1")
+    end
+
+    test "restart_instance updates state to up" do
+      controller = start_controller()
+      register_node(controller, "node-1")
+      register_instance(controller, "node-1", "inst-1")
+
+      FakeAgentAdapter.set_apply_result(
+        "node-1",
+        "inst-1",
+        {:ok, %{action: :restart, changed: true}}
+      )
+
+      assert {:ok, %{action: :restart, changed: true}} =
+               Controller.restart_instance(controller, "cmd-restart", "inst-1", true)
+
+      assert %Instance{target_state: :up} = Controller.get_instance(controller, "inst-1")
+    end
+
+    test "delete_instance with confirm removes instance and applies absent" do
+      controller = start_controller()
+      register_node(controller, "node-1")
+      register_instance(controller, "node-1", "inst-1")
+
+      FakeAgentAdapter.set_apply_result(
+        "node-1",
+        "inst-1",
+        {:ok, %{action: :absent, changed: true}}
+      )
+
+      assert {:ok, %{action: :absent, changed: true}} =
+               Controller.delete_instance(controller, "cmd-del", "inst-1", true)
+
+      assert Controller.get_instance(controller, "inst-1") == nil
+    end
+
+    test "delete_instance refuses to apply absent when instance has peers" do
+      controller = start_controller()
+      register_node(controller, "node-1")
+      register_instance(controller, "node-1", "inst-1")
+
+      peer_attrs = %{
+        id: "peer-1",
+        instance_id: "inst-1",
+        name: "laptop",
+        allowed_ips: "10.0.0.2/32",
+        address: "10.0.0.2/32"
+      }
+
+      assert {:ok, "peer-1"} = Controller.create_peer(controller, "cmd-peer", peer_attrs)
+
+      assert {:error, "Instance has peers"} =
+               Controller.delete_instance(controller, "cmd-del", "inst-1", true)
+
+      assert Controller.get_instance(controller, "inst-1")
+
+      # Агент не должен был вызван — валидация раньше apply.
+      assert FakeAgentAdapter.calls() == []
+    end
+
+    test "dry_run does not update state" do
+      controller = start_controller()
+      register_node(controller, "node-1")
+      register_instance(controller, "node-1", "inst-1")
+
+      FakeAgentAdapter.set_apply_result(
+        "node-1",
+        "inst-1",
+        {:ok, %{action: :up, dry_run: true, diff: ["+ line"], changed: true}}
+      )
+
+      assert {:ok, %{action: :up, dry_run: true}} =
+               Controller.converge_instance(
+                 controller,
+                 "cmd-dry",
+                 "inst-1",
+                 action: :up,
+                 dry_run: true
+               )
+
+      assert %Instance{target_state: :configured} = Controller.get_instance(controller, "inst-1")
+    end
+
+    test "deduplicates by command_id" do
+      controller = start_controller()
+      register_node(controller, "node-1")
+      register_instance(controller, "node-1", "inst-1")
+
+      FakeAgentAdapter.set_apply_result("node-1", "inst-1", {:ok, %{action: :up, changed: true}})
+
+      assert {:ok, %{action: :up, changed: true}} =
+               Controller.start_instance(controller, "cmd-dup", "inst-1")
+
+      assert {:ok, %{action: :up, changed: true}} =
+               Controller.start_instance(controller, "cmd-dup", "inst-1")
+
+      converge_logs =
+        Controller.command_log(controller)
+        |> Enum.filter(&(&1.type == "converge_instance"))
+
+      assert length(converge_logs) == 1
+    end
+  end
+
   # Helpers
 
   defp register_node(controller, node_id) do

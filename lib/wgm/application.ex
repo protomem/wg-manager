@@ -77,9 +77,10 @@ defmodule WGM.Application do
     end
   end
 
-  # Формат: id:protocol:name:listen_port:subnet:address|...
+  # Формат: id:protocol:name:listen_port:subnet:address[:target_state]|...
   # protocol — wg или awg; listen_port/subnet/address могут быть произвольными,
   # так как read-only агент использует только name и protocol для наблюдения.
+  # target_state — configured (по умолчанию), up, down.
   defp parse_instances(value) do
     value
     |> String.split("|")
@@ -88,7 +89,10 @@ defmodule WGM.Application do
   end
 
   defp parse_instance(raw) do
-    [id, protocol, name, port, subnet, address] = String.split(raw, ":")
+    parts = String.split(raw, ":")
+
+    [id, protocol, name, port, subnet, address] = Enum.take(parts, 6)
+    target_state = Enum.at(parts, 6, "configured")
 
     %Instance{
       id: id,
@@ -99,7 +103,8 @@ defmodule WGM.Application do
       subnet: subnet,
       private_key: nil,
       public_key: nil,
-      address: address
+      address: address,
+      target_state: parse_target_state(target_state)
     }
   end
 
@@ -108,6 +113,10 @@ defmodule WGM.Application do
 
   defp parse_protocol(other),
     do: raise("Unknown protocol in WGM_AGENT_INSTANCES: #{other} (expected wg or awg)")
+
+  defp parse_target_state("up"), do: :up
+  defp parse_target_state("down"), do: :down
+  defp parse_target_state(_), do: :configured
 
   defp controller_children do
     db_path = System.get_env("WGM_DB_PATH", @default_db_path)

@@ -6,6 +6,7 @@ defmodule WGM.Instance do
   alias WGM.Instance.AWGParams
 
   @type protocol :: :wg | :awg
+  @type target_state :: :configured | :up | :down
 
   @type t :: %__MODULE__{
           id: String.t(),
@@ -19,7 +20,8 @@ defmodule WGM.Instance do
           address: String.t(),
           dns: String.t() | nil,
           mtu: pos_integer() | nil,
-          awg_params: AWGParams.t() | nil
+          awg_params: AWGParams.t() | nil,
+          target_state: target_state()
         }
 
   defstruct [
@@ -34,7 +36,8 @@ defmodule WGM.Instance do
     :address,
     :dns,
     :mtu,
-    :awg_params
+    :awg_params,
+    :target_state
   ]
 
   defmodule AWGParams do

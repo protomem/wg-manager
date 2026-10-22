@@ -6,11 +6,21 @@ defmodule WGM.Agent do
 
   use GenServer
 
-  alias WGM.Agent.{Observer, Status}
+  require Logger
+
+  alias WGM.Agent.{Converger, Observer, Status}
   alias WGM.CLI.Adapter
   alias WGM.Keygen
 
-  defstruct [:node, :instances, :adapter, :key_store, :read_only, server_keys: %{}]
+  defstruct [
+    :node,
+    :instances,
+    :adapter,
+    :key_store,
+    :config_store,
+    :read_only,
+    server_keys: %{}
+  ]
 
   @doc """
   Запускает агента.
@@ -22,8 +32,10 @@ defmodule WGM.Agent do
       `WGM.CLI.SystemAdapter`);
     - `:key_store` — модуль, реализующая `WGM.Agent.KeyStore` (по умолчанию
       `WGM.Agent.KeyStore.FileSystem`);
+    - `:config_store` — модуль, реализующая `WGM.Agent.ConfigStore` (по
+      умолчанию `WGM.Agent.ConfigStore.FileSystem`);
     - `:read_only` — `true`/`false`; в режиме read-only мутационные RPC
-      (например, `generate_keypair`) возвращают ошибку.
+      (например, `generate_keypair`, `apply_instance`) возвращают ошибку.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -50,6 +62,22 @@ defmodule WGM.Agent do
     GenServer.call(agent, {:generate_keypair, instance_id, protocol})
   end
 
+  @doc """
+  Применяет желаемое состояние инстанса на узле (converge).
+
+  Опции см. в `WGM.Agent.Converger.converge/4`.
+  """
+  @spec apply_instance(
+          GenServer.server(),
+          WGM.Instance.t(),
+          [WGM.Peer.t()],
+          keyword()
+        ) ::
+          {:ok, map()} | {:error, String.t()}
+  def apply_instance(agent, instance, peers, opts \\ []) do
+    GenServer.call(agent, {:apply_instance, instance, peers, opts})
+  end
+
   @impl true
   def init(opts) do
     state = %__MODULE__{
@@ -57,9 +85,12 @@ defmodule WGM.Agent do
       instances: opts[:instances] || [],
       adapter: opts[:adapter] || WGM.CLI.SystemAdapter,
       key_store: opts[:key_store] || WGM.Agent.KeyStore.FileSystem,
+      config_store: opts[:config_store] || WGM.Agent.ConfigStore.FileSystem,
       read_only: Keyword.get(opts, :read_only, false),
       server_keys: %{}
     }
+
+    state = apply_saved_configs_at_boot(state)
 
     {:ok, state}
   end
@@ -81,6 +112,16 @@ defmodule WGM.Agent do
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
+  end
+
+  def handle_call({:apply_instance, _instance, _peers, _opts}, _from, %{read_only: true} = state) do
+    {:reply, {:error, "read-only mode"}, state}
+  end
+
+  def handle_call({:apply_instance, instance, peers, opts}, _from, state) do
+    result = Converger.converge(state, instance, peers, opts)
+    new_state = update_instances_after_apply(state, instance, result, opts[:action] || :up)
+    {:reply, result, new_state}
   end
 
   defp ensure_private_key(state, instance_id, protocol) do
@@ -115,4 +156,68 @@ defmodule WGM.Agent do
         {:error, reason}
     end
   end
+
+  defp apply_saved_configs_at_boot(%{read_only: true} = state), do: state
+
+  defp apply_saved_configs_at_boot(state) do
+    new_instances =
+      Enum.map(state.instances, fn instance ->
+        if instance.target_state == :up do
+          apply_saved_instance(state, instance)
+        else
+          instance
+        end
+      end)
+
+    %{state | instances: new_instances}
+  end
+
+  defp apply_saved_instance(state, instance) do
+    config_path = state.config_store.config_path(instance.protocol, instance.name)
+
+    case state.config_store.read_config(instance.protocol, instance.name) do
+      {:ok, _config} ->
+        case state.adapter.up(instance.protocol, instance.name, config_path) do
+          :ok ->
+            instance
+
+          {:error, reason} ->
+            Logger.warning("Failed to apply saved config for #{instance.name} at boot: #{reason}")
+
+            instance
+        end
+
+      {:error, :enoent} ->
+        instance
+
+      {:error, reason} ->
+        Logger.warning(
+          "Failed to read saved config for #{instance.name} at boot: #{inspect(reason)}"
+        )
+
+        instance
+    end
+  end
+
+  defp update_instances_after_apply(state, instance, {:ok, _result}, :absent) do
+    %{state | instances: Enum.reject(state.instances, &(&1.id == instance.id))}
+  end
+
+  defp update_instances_after_apply(state, instance, {:ok, _result}, action)
+       when action in [:up, :down, :restart] do
+    target_state = action_to_target_state(action)
+
+    new_instances =
+      Enum.map(state.instances, fn
+        %{id: id} when id == instance.id -> %{instance | target_state: target_state}
+        other -> other
+      end)
+
+    %{state | instances: new_instances}
+  end
+
+  defp update_instances_after_apply(state, _instance, _result, _action), do: state
+
+  defp action_to_target_state(:restart), do: :up
+  defp action_to_target_state(action), do: action
 end

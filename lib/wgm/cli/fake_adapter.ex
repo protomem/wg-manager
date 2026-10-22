@@ -62,6 +62,46 @@ if Mix.env() != :prod do
       end
     end
 
+    @impl true
+    def syncconf(protocol, interface, config_path) do
+      record_call({:syncconf, protocol, interface, config_path})
+      :ok
+    end
+
+    @impl true
+    def strip_config(protocol, interface, config_path) do
+      record_call({:strip_config, protocol, interface, config_path})
+
+      case :ets.lookup(__MODULE__, {:strip, protocol, interface}) do
+        [{_, content}] -> {:ok, content}
+        [] -> {:ok, WGM.ConfigGenerator.strip_quick_keys("[Interface]\nAddress = 10.0.0.1/24\n")}
+      end
+    end
+
+    @impl true
+    def up(protocol, interface, config_path) do
+      case record_call({:up, protocol, interface, config_path}) do
+        :ok ->
+          set_interface_state(interface, :up)
+          :ok
+
+        other ->
+          other
+      end
+    end
+
+    @impl true
+    def down(protocol, interface, config_path) do
+      case record_call({:down, protocol, interface, config_path}) do
+        :ok ->
+          set_interface_state(interface, :down)
+          :ok
+
+        other ->
+          other
+      end
+    end
+
     def set_dump(protocol, interface, dump) do
       :ets.insert(__MODULE__, {{:dump, protocol, interface}, dump})
     end
@@ -72,6 +112,67 @@ if Mix.env() != :prod do
 
     def reset do
       :ets.delete_all_objects(__MODULE__)
+    end
+
+    def calls do
+      case :ets.lookup(__MODULE__, :calls) do
+        [{_, calls}] -> Enum.reverse(calls)
+        [] -> []
+      end
+    end
+
+    def set_syncconf_result(protocol, interface, result) do
+      :ets.insert(__MODULE__, {{:syncconf_result, protocol, interface}, result})
+    end
+
+    def set_up_result(protocol, interface, result) do
+      :ets.insert(__MODULE__, {{:up_result, protocol, interface}, result})
+    end
+
+    def set_down_result(protocol, interface, result) do
+      :ets.insert(__MODULE__, {{:down_result, protocol, interface}, result})
+    end
+
+    def set_strip_content(protocol, interface, content) do
+      :ets.insert(__MODULE__, {{:strip, protocol, interface}, content})
+    end
+
+    defp record_call(call) do
+      :ets.update_counter(__MODULE__, :counter, {2, 1}, {:counter, 0})
+
+      calls =
+        case :ets.lookup(__MODULE__, :calls) do
+          [{_, list}] -> [call | list]
+          [] -> [call]
+        end
+
+      :ets.insert(__MODULE__, {:calls, calls})
+      maybe_apply_result(call)
+    end
+
+    defp maybe_apply_result({:syncconf, protocol, interface, _}) do
+      case :ets.lookup(__MODULE__, {:syncconf_result, protocol, interface}) do
+        [{_, result}] -> result
+        [] -> :ok
+      end
+    end
+
+    defp maybe_apply_result({:up, protocol, interface}) do
+      case :ets.lookup(__MODULE__, {:up_result, protocol, interface}) do
+        [{_, result}] -> result
+        [] -> :ok
+      end
+    end
+
+    defp maybe_apply_result({:down, protocol, interface}) do
+      case :ets.lookup(__MODULE__, {:down_result, protocol, interface}) do
+        [{_, result}] -> result
+        [] -> :ok
+      end
+    end
+
+    defp maybe_apply_result({_other, _protocol, _interface, _config_path}) do
+      :ok
     end
 
     defp next_counter do
