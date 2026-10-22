@@ -14,7 +14,7 @@ defmodule WGM.Agent.Status do
             protocol: WGM.Instance.protocol(),
             interface_state: :up | :down | :unknown,
             present: boolean(),
-            device: WGM.Parser.wg_status() | WGM.Parser.awg_status() | nil,
+            device: WGM.Parser.scrubbed_status() | nil,
             peers: [WGM.Parser.peer_status()] | nil,
             error: String.t() | nil
           }

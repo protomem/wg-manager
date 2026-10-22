@@ -139,6 +139,27 @@ defmodule WGM.ConfigGenerator do
   end
 
   defp server_awg_lines(%Instance.AWGParams{} = params) do
+    s_h_lines(params) ++ header_protection_line(params)
+  end
+
+  defp client_awg_lines(%Instance.AWGParams{} = params) do
+    [
+      "Jc = #{params.jc}",
+      "Jmin = #{params.jmin}",
+      "Jmax = #{params.jmax}"
+    ] ++
+      s_h_lines(params) ++
+      [
+        "I1 = #{params.i1}",
+        "I2 = #{params.i2}",
+        "I3 = #{params.i3}",
+        "I4 = #{params.i4}",
+        "I5 = #{params.i5}"
+      ] ++ header_protection_line(params)
+  end
+
+  # S1–S4 и H1–H4 общие для серверного и клиентского AWG-конфига.
+  defp s_h_lines(%Instance.AWGParams{} = params) do
     [
       "S1 = #{params.s1}",
       "S2 = #{params.s2}",
@@ -148,28 +169,7 @@ defmodule WGM.ConfigGenerator do
       "H2 = #{params.h2}",
       "H3 = #{params.h3}",
       "H4 = #{params.h4}"
-    ] ++ header_protection_line(params)
-  end
-
-  defp client_awg_lines(%Instance.AWGParams{} = params) do
-    [
-      "Jc = #{params.jc}",
-      "Jmin = #{params.jmin}",
-      "Jmax = #{params.jmax}",
-      "S1 = #{params.s1}",
-      "S2 = #{params.s2}",
-      "S3 = #{params.s3}",
-      "S4 = #{params.s4}",
-      "H1 = #{params.h1}",
-      "H2 = #{params.h2}",
-      "H3 = #{params.h3}",
-      "H4 = #{params.h4}",
-      "I1 = #{params.i1}",
-      "I2 = #{params.i2}",
-      "I3 = #{params.i3}",
-      "I4 = #{params.i4}",
-      "I5 = #{params.i5}"
-    ] ++ header_protection_line(params)
+    ]
   end
 
   defp header_protection_line(%Instance.AWGParams{header_protection_key: key})

@@ -12,6 +12,7 @@ defmodule WGM.ApplicationTest do
           "WGM_NODE_NAME",
           "WGM_NODE_ADDRESS",
           "WGM_NODE_ROLE",
+          "WGM_AGENT_READ_ONLY",
           "WGM_DB_PATH"
         ],
         &System.delete_env/1
@@ -58,6 +59,19 @@ defmodule WGM.ApplicationTest do
       assert opts[:node].address == "193.233.91.130"
       assert opts[:node].role == :entry
       assert opts[:instances] == []
+      assert opts[:read_only] == true
+    end
+
+    test "allows disabling read-only mode via WGM_AGENT_READ_ONLY=false" do
+      System.put_env("WGM_MODE", "agent")
+      System.put_env("WGM_NODE_ID", "node-1")
+      System.put_env("WGM_NODE_NAME", "entry")
+      System.put_env("WGM_NODE_ADDRESS", "193.233.91.130")
+      System.put_env("WGM_NODE_ROLE", "entry")
+      System.put_env("WGM_AGENT_READ_ONLY", "false")
+
+      assert [{Agent, opts}] = WGM.Application.children()
+      assert opts[:read_only] == false
     end
 
     test "defaults unknown role to :standalone" do

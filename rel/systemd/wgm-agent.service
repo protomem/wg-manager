@@ -1,7 +1,11 @@
 [Unit]
 Description=WGM agent (read-only observer)
 After=network.target
-Before=wg-quick.target awg-quick.target
+# В read-only фазе (срез 4) агент только наблюдает и не пишет конфиги
+# инстансов, поэтому строгий ordering относительно wg-quick@/awg-quick@
+# пока не требуется. Реальный порядок (Before= на сгенерированные
+# инстансовые юниты + ExecStartPre) будет добавлен в срезе 6, когда агент
+# начнёт сводить фактическое состояние к желаемому.
 
 [Service]
 Type=simple
@@ -10,6 +14,7 @@ Group=root
 WorkingDirectory=/opt/wgm/current
 Environment=HOME=/root
 Environment=WGM_MODE=agent
+Environment=WGM_AGENT_READ_ONLY=true
 EnvironmentFile=-/etc/wgm/cookie.env
 EnvironmentFile=-/etc/wgm/agent.env
 ExecStart=/opt/wgm/current/bin/wgm start

@@ -8,7 +8,8 @@ VPN-инстансы; старый `wg0` и работающий каскад н
 
 - `wgm` — OTP-приложение, собранное как Elixir release (`mix release`).
 - `rel/systemd/wgm-agent.service` — юнит агента для всех узлов.
-- `rel/systemd/wgm-controller.service` — юнит контроллера для входного узла.
+- `rel/systemd/wgm-controller.service` — юнит контроллера для отдельностоящего
+  узла (по ADR-0001 — `5.129.219.31`).
 - `rel/systemd/agent.env.example` — шаблон переменных агента.
 - `rel/systemd/controller.env.example` — шаблон переменных контроллера.
 
@@ -96,6 +97,11 @@ RELEASE_DISTRIBUTION=name
 RELEASE_NODE=wgm_agent@193.233.91.130
 ERL_AFLAGS="-kernel inet_dist_listen_min 9100 inet_dist_listen_max 9100"
 
+# Read-only режим агента: мутационные RPC (generate_keypair и др.) отклоняются.
+# В срезе 6, когда агент начнёт писать конфиги инстансов, это можно будет
+# перевести в false после явного подтверждения.
+WGM_AGENT_READ_ONLY=true
+
 # Read-only наблюдение за живыми интерфейсами.
 WGM_AGENT_INSTANCES="legacy-wg0:wg:wg0:51820:10.10.0.0/24:10.10.0.1/24|legacy-awg0:awg:awg0:51821:10.11.0.0/24:10.11.0.1/24"
 ```
@@ -129,6 +135,20 @@ ERL_AFLAGS="-kernel inet_dist_listen_min 9101 inet_dist_listen_max 9101"
 
 По умолчанию база данных контроллера:
 `/var/lib/wgm/controller.db` (права `0600`, root-only).
+
+При первом запуске контроллер сам установит права `0600` на файл БД.
+Убедитесь, что они выставлены корректно:
+
+```bash
+ssh root@5.129.219.31 'stat -c "%a %n" /var/lib/wgm/controller.db'
+# ожидается: 600 /var/lib/wgm/controller.db
+```
+
+При необходимости установите вручную до запуска:
+
+```bash
+ssh root@5.129.219.31 'chmod 600 /var/lib/wgm/controller.db'
+```
 
 ## Запуск
 

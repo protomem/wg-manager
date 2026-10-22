@@ -37,7 +37,7 @@ defmodule WGM.Agent.Observer do
 
     {device, peers} =
       case parsed do
-        {:ok, status} -> {Map.drop(status, [:peers]), status.peers}
+        {:ok, status} -> {scrub_device(status), status.peers}
         _ -> {nil, nil}
       end
 
@@ -70,4 +70,12 @@ defmodule WGM.Agent.Observer do
 
   defp parse_dump(dump, :wg), do: Parser.parse_wg_show_dump(dump)
   defp parse_dump(dump, :awg), do: Parser.parse_awg_show_dump(dump)
+
+  # Статус, отправляемый с узла, не должен содержать приватных ключей
+  # живых интерфейсов (см. ADR «Секреты» и историю 32).
+  defp scrub_device(status) do
+    status
+    |> Map.drop([:peers])
+    |> Map.put(:private_key, nil)
+  end
 end

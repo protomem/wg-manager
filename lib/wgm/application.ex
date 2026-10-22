@@ -40,21 +40,24 @@ defmodule WGM.Application do
   end
 
   @doc """
+  Разбирает строковое значение режима в атом.
+
+  Поддерживаются только `"agent"` и `"controller"`; всё остальное
+  трактуется как `nil`.
+  """
+  @spec parse_mode(String.t() | nil) :: :agent | :controller | nil
+  def parse_mode("agent"), do: :agent
+  def parse_mode("controller"), do: :controller
+  def parse_mode(_), do: nil
+
+  @doc """
   Определяет текущий режим работы.
 
   Переменная окружения `WGM_MODE` имеет приоритет над application env.
   """
   @spec mode() :: :agent | :controller | nil
   def mode do
-    env_mode() || Application.get_env(:wgm, :mode)
-  end
-
-  defp env_mode do
-    case System.get_env("WGM_MODE") do
-      "agent" -> :agent
-      "controller" -> :controller
-      _ -> nil
-    end
+    parse_mode(System.get_env("WGM_MODE")) || Application.get_env(:wgm, :mode)
   end
 
   defp agent_children do
@@ -62,7 +65,7 @@ defmodule WGM.Application do
     instances = agent_instances()
 
     [
-      {Agent, node: node, instances: instances, name: :wgm_agent}
+      {Agent, node: node, instances: instances, read_only: agent_read_only(), name: :wgm_agent}
     ]
   end
 
@@ -91,14 +94,20 @@ defmodule WGM.Application do
       id: id,
       node_id: System.get_env("WGM_NODE_ID", ""),
       name: name,
-      protocol: String.to_atom(protocol),
+      protocol: parse_protocol(protocol),
       listen_port: String.to_integer(port),
       subnet: subnet,
       private_key: nil,
-      public_key: "dummy",
+      public_key: nil,
       address: address
     }
   end
+
+  defp parse_protocol("wg"), do: :wg
+  defp parse_protocol("awg"), do: :awg
+
+  defp parse_protocol(other),
+    do: raise("Unknown protocol in WGM_AGENT_INSTANCES: #{other} (expected wg or awg)")
 
   defp controller_children do
     db_path = System.get_env("WGM_DB_PATH", @default_db_path)
@@ -128,4 +137,12 @@ defmodule WGM.Application do
   defp parse_role("entry"), do: :entry
   defp parse_role("exit"), do: :exit
   defp parse_role(_), do: :standalone
+
+  defp agent_read_only do
+    case System.get_env("WGM_AGENT_READ_ONLY") do
+      "false" -> false
+      "0" -> false
+      _ -> true
+    end
+  end
 end

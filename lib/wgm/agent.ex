@@ -10,7 +10,7 @@ defmodule WGM.Agent do
   alias WGM.CLI.Adapter
   alias WGM.Keygen
 
-  defstruct [:node, :instances, :adapter, :key_store, server_keys: %{}]
+  defstruct [:node, :instances, :adapter, :key_store, :read_only, server_keys: %{}]
 
   @doc """
   Запускает агента.
@@ -21,7 +21,9 @@ defmodule WGM.Agent do
     - `:adapter` — модуль, реализующая `WGM.CLI.Adapter` (по умолчанию
       `WGM.CLI.SystemAdapter`);
     - `:key_store` — модуль, реализующая `WGM.Agent.KeyStore` (по умолчанию
-      `WGM.Agent.KeyStore.FileSystem`).
+      `WGM.Agent.KeyStore.FileSystem`);
+    - `:read_only` — `true`/`false`; в режиме read-only мутационные RPC
+      (например, `generate_keypair`) возвращают ошибку.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -55,6 +57,7 @@ defmodule WGM.Agent do
       instances: opts[:instances] || [],
       adapter: opts[:adapter] || WGM.CLI.SystemAdapter,
       key_store: opts[:key_store] || WGM.Agent.KeyStore.FileSystem,
+      read_only: Keyword.get(opts, :read_only, false),
       server_keys: %{}
     }
 
@@ -65,6 +68,10 @@ defmodule WGM.Agent do
   def handle_call(:status, _from, state) do
     status = Observer.observe(state.node, state.instances, state.adapter)
     {:reply, status, state}
+  end
+
+  def handle_call({:generate_keypair, _instance_id, _protocol}, _from, %{read_only: true} = state) do
+    {:reply, {:error, "read-only mode"}, state}
   end
 
   def handle_call({:generate_keypair, instance_id, protocol}, _from, state) do

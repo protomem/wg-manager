@@ -43,6 +43,14 @@ defmodule WGM.Parser do
           peers: [peer_status()]
         }
 
+  @type scrubbed_status :: %{
+          private_key: nil,
+          public_key: String.t(),
+          listen_port: integer(),
+          fwmark: String.t(),
+          awg_params: AWGParams.t() | nil
+        }
+
   @doc """
   Парсит вывод `wg show dump`.
   """
@@ -257,19 +265,14 @@ defmodule WGM.Parser do
     end
   end
 
-  defp parse_int_or_zero(str) do
-    case Integer.parse(str) do
-      {n, ""} -> n
-      _ -> 0
-    end
-  end
-
+  defp parse_int_or_zero(str), do: parse_int(str, 0)
   defp parse_int_or_nil("(null)"), do: nil
+  defp parse_int_or_nil(str), do: parse_int(str, nil)
 
-  defp parse_int_or_nil(str) do
+  defp parse_int(str, fallback) do
     case Integer.parse(str) do
       {n, ""} -> n
-      _ -> nil
+      _ -> fallback
     end
   end
 end

@@ -49,7 +49,13 @@ defmodule WGM.AgentTest do
       node = %Node{id: "node-kg", name: "entry", address: "193.233.91.130", role: :entry}
 
       {:ok, agent} =
-        Agent.start_link(node: node, instances: [], adapter: FakeAdapter, key_store: FakeKeyStore)
+        Agent.start_link(
+          node: node,
+          instances: [],
+          adapter: FakeAdapter,
+          key_store: FakeKeyStore,
+          read_only: false
+        )
 
       assert {:ok, "public-for-private-key-1"} =
                Agent.generate_keypair(agent, "inst-kg", :wg)
@@ -59,7 +65,13 @@ defmodule WGM.AgentTest do
       node = %Node{id: "node-kg", name: "entry", address: "193.233.91.130", role: :entry}
 
       {:ok, agent} =
-        Agent.start_link(node: node, instances: [], adapter: FakeAdapter, key_store: FakeKeyStore)
+        Agent.start_link(
+          node: node,
+          instances: [],
+          adapter: FakeAdapter,
+          key_store: FakeKeyStore,
+          read_only: false
+        )
 
       assert {:ok, pub1} = Agent.generate_keypair(agent, "inst-1", :wg)
       assert {:ok, pub2} = Agent.generate_keypair(agent, "inst-2", :wg)
@@ -74,7 +86,8 @@ defmodule WGM.AgentTest do
           node: node,
           instances: [],
           adapter: FakeAdapter,
-          key_store: FakeKeyStore
+          key_store: FakeKeyStore,
+          read_only: false
         )
 
       assert {:ok, pub1} = Agent.generate_keypair(agent1, "inst-persist", :wg)
@@ -84,7 +97,8 @@ defmodule WGM.AgentTest do
           node: node,
           instances: [],
           adapter: FakeAdapter,
-          key_store: FakeKeyStore
+          key_store: FakeKeyStore,
+          read_only: false
         )
 
       assert {:ok, pub2} = Agent.generate_keypair(agent2, "inst-persist", :wg)
@@ -92,6 +106,22 @@ defmodule WGM.AgentTest do
 
       assert FakeKeyStore.read_private_key(:wg, "inst-persist") ==
                {:ok, "private-key-1"}
+    end
+
+    test "refuses to generate keys in read-only mode" do
+      node = %Node{id: "node-ro", name: "entry", address: "193.233.91.130", role: :entry}
+
+      {:ok, agent} =
+        Agent.start_link(
+          node: node,
+          instances: [],
+          adapter: FakeAdapter,
+          key_store: FakeKeyStore,
+          read_only: true
+        )
+
+      assert {:error, "read-only mode"} = Agent.generate_keypair(agent, "inst-ro", :wg)
+      assert FakeKeyStore.read_private_key(:wg, "inst-ro") == {:error, :enoent}
     end
   end
 
@@ -318,6 +348,63 @@ defmodule WGM.AgentTest do
       assert inst_status.present == false
       assert inst_status.interface_state == :up
       assert inst_status.error == "Empty dump"
+    end
+
+    test "does not expose private keys in device status for WG" do
+      node = %Node{id: "node-1", name: "entry", address: "193.233.91.130", role: :entry}
+
+      instance = %Instance{
+        id: "inst-wg-private",
+        node_id: "node-1",
+        name: "wg-private",
+        protocol: :wg,
+        listen_port: 51820,
+        subnet: "10.0.0.0/24",
+        private_key: "priv",
+        public_key: "pub",
+        address: "10.0.0.1/24"
+      }
+
+      FakeAdapter.set_dump(:wg, "wg-private", "real-private-key\tpub\t51820\toff\n")
+      FakeAdapter.set_interface_state("wg-private", :up)
+
+      status = Observer.observe(node, [instance], FakeAdapter)
+
+      assert [%Status.InstanceStatus{} = inst_status] = status.instances
+      assert inst_status.present
+      assert inst_status.device.private_key == nil
+      assert inst_status.device.public_key == "pub"
+    end
+
+    test "does not expose private keys in device status for AWG" do
+      node = %Node{id: "node-2", name: "exit", address: "185.40.31.22", role: :exit}
+
+      instance = %Instance{
+        id: "inst-awg-private",
+        node_id: "node-2",
+        name: "awg-private",
+        protocol: :awg,
+        listen_port: 51821,
+        subnet: "10.1.0.0/24",
+        private_key: "priv",
+        public_key: "pub",
+        address: "10.1.0.1/24"
+      }
+
+      dump =
+        "real-private-key\tpub\t51821\t" <>
+          "3\t40\t100\t1\t2\t3\t4\t5\t6\t7\t8\t" <>
+          "1\t2\t3\t4\t5\thpk\toff\n"
+
+      FakeAdapter.set_dump(:awg, "awg-private", dump)
+      FakeAdapter.set_interface_state("awg-private", :up)
+
+      status = Observer.observe(node, [instance], FakeAdapter)
+
+      assert [%Status.InstanceStatus{} = inst_status] = status.instances
+      assert inst_status.present
+      assert inst_status.device.private_key == nil
+      assert inst_status.device.awg_params.header_protection_key == "hpk"
     end
   end
 end

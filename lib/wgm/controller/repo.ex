@@ -9,7 +9,21 @@ defmodule WGM.Controller.Repo do
 
   @spec open(String.t()) :: {:ok, Sqlite3.db()} | {:error, Sqlite3.reason()}
   def open(path \\ ":memory:") do
-    Sqlite3.open(path)
+    with {:ok, conn} <- Sqlite3.open(path) do
+      _ = ensure_db_permissions(path)
+      {:ok, conn}
+    end
+  end
+
+  defp ensure_db_permissions(":memory:"), do: :ok
+
+  defp ensure_db_permissions(path) do
+    # БД содержит клиентские конфиги с приватными ключами; файл должен быть
+    # доступен только владельцу (root). См. спеку «Секреты».
+    case File.chmod(path, 0o600) do
+      :ok -> :ok
+      {:error, _reason} = error -> error
+    end
   end
 
   @spec migrate(Sqlite3.db()) :: :ok | {:error, Sqlite3.reason()}
