@@ -12,7 +12,11 @@ defmodule WGM.Controller.AgentAdapter.Distribution do
 
   @impl true
   def status(%WGMNode{address: address}) do
-    call_agent(address, WGM.Agent, :status, [:wgm_agent])
+    case call_agent(address, WGM.Agent, :status, [:wgm_agent]) do
+      %WGM.Agent.Status{} = status -> {:ok, status}
+      {:error, reason} -> {:error, reason}
+      other -> {:error, "unexpected agent status: #{inspect(other)}"}
+    end
   end
 
   @impl true

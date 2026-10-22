@@ -107,8 +107,9 @@ defmodule WGM.Parser do
   defp parse_awg_device(line) do
     cols = String.split(line, "\t")
 
-    # Минимум: 3 базовые колонки + 17 известных AWG-параметров + fwmark.
-    min_cols = 3 + 17 + 1
+    # Минимум: 3 базовые колонки + 16 обязательных AWG-параметров + fwmark.
+    # Некоторые версии awg добавляют ещё header_protection_key (21-я колонка).
+    min_cols = 3 + 16 + 1
 
     if length(cols) < min_cols do
       {:error,
@@ -133,14 +134,14 @@ defmodule WGM.Parser do
   end
 
   defp parse_awg_device_params(cols) do
-    # Последняя колонка — fwmark, перед ней — AWG-параметры (известные и,
-    # возможно, неизвестные нам). Разбираем первые 17 известных значений.
+    # Последняя колонка — fwmark, перед ней — AWG-параметры.
+    # Поддерживаем 16 обязательных параметров и опциональный header_protection_key.
     case Enum.split(cols, -1) do
-      {awg_cols, [fwmark]} when length(awg_cols) >= 17 ->
+      {awg_cols, [fwmark]} when length(awg_cols) >= 16 ->
         parse_known_awg_params(awg_cols, fwmark)
 
       _ ->
-        {:error, "Invalid AWG device line: expected at least 17 parameter columns before fwmark"}
+        {:error, "Invalid AWG device line: expected at least 16 parameter columns before fwmark"}
     end
   end
 
@@ -161,10 +162,11 @@ defmodule WGM.Parser do
       i2_str,
       i3_str,
       i4_str,
-      i5_str,
-      header_protection_key
-      | _extras
+      i5_str
+      | extras
     ] = awg_cols
+
+    header_protection_key = List.first(extras)
 
     with {jc, ""} <- Integer.parse(jc_str),
          {jmin, ""} <- Integer.parse(jmin_str),
@@ -173,11 +175,11 @@ defmodule WGM.Parser do
          {s2, ""} <- Integer.parse(s2_str),
          {s3, ""} <- Integer.parse(s3_str),
          {s4, ""} <- Integer.parse(s4_str),
-         {i1, ""} <- Integer.parse(i1_str),
-         {i2, ""} <- Integer.parse(i2_str),
-         {i3, ""} <- Integer.parse(i3_str),
-         {i4, ""} <- Integer.parse(i4_str),
-         {i5, ""} <- Integer.parse(i5_str) do
+         i1 <- parse_int_or_nil(i1_str),
+         i2 <- parse_int_or_nil(i2_str),
+         i3 <- parse_int_or_nil(i3_str),
+         i4 <- parse_int_or_nil(i4_str),
+         i5 <- parse_int_or_nil(i5_str) do
       {:ok,
        %AWGParams{
          jc: jc,
@@ -259,6 +261,15 @@ defmodule WGM.Parser do
     case Integer.parse(str) do
       {n, ""} -> n
       _ -> 0
+    end
+  end
+
+  defp parse_int_or_nil("(null)"), do: nil
+
+  defp parse_int_or_nil(str) do
+    case Integer.parse(str) do
+      {n, ""} -> n
+      _ -> nil
     end
   end
 end

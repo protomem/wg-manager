@@ -1,0 +1,21 @@
+[Unit]
+Description=WGM controller
+After=network.target wgm-agent.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/wgm/current
+Environment=HOME=/root
+Environment=WGM_MODE=controller
+Environment=WGM_DB_PATH=/var/lib/wgm/controller.db
+EnvironmentFile=-/etc/wgm/cookie.env
+EnvironmentFile=-/etc/wgm/controller.env
+ExecStart=/opt/wgm/current/bin/wgm start
+ExecStop=/opt/wgm/current/bin/wgm stop
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

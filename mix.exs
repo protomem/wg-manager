@@ -5,10 +5,11 @@ defmodule WGM.MixProject do
     [
       app: :wgm,
       version: "0.1.0",
-      elixir: "~> 1.20",
+      elixir: "~> 1.17",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
-      deps: deps()
+      deps: deps(),
+      releases: releases()
     ]
   end
 
@@ -18,7 +19,21 @@ defmodule WGM.MixProject do
   # Run "mix help compile.app" to learn about applications.
   def application do
     [
-      extra_applications: [:logger]
+      extra_applications: [:logger],
+      mod: {WGM.Application, []}
+    ]
+  end
+
+  defp releases do
+    [
+      wgm: [
+        include_executables_for: [:unix],
+        applications: [
+          wgm: :permanent,
+          runtime_tools: :permanent
+        ],
+        steps: [:assemble, :tar]
+      ]
     ]
   end
 

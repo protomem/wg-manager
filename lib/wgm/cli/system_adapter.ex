@@ -23,7 +23,27 @@ defmodule WGM.CLI.SystemAdapter do
 
   @impl true
   def show_dump(protocol, interface) do
-    run_command(bin(protocol), ["show", "dump", interface])
+    with {:ok, output} <- run_command(bin(protocol), ["show", "all", "dump"]) do
+      filtered =
+        output
+        |> String.split("\n")
+        |> Enum.filter(&String.starts_with?(&1, interface <> "\t"))
+        |> Enum.map(&strip_interface_column/1)
+        |> Enum.join("\n")
+
+      if filtered == "" do
+        {:error, "Interface #{interface} not found in dump"}
+      else
+        {:ok, filtered}
+      end
+    end
+  end
+
+  defp strip_interface_column(line) do
+    case String.split(line, "\t", parts: 2) do
+      [_interface, rest] -> rest
+      _ -> line
+    end
   end
 
   @impl true

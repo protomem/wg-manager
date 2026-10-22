@@ -55,11 +55,11 @@ defmodule WGM.Instance do
             h2: String.t(),
             h3: String.t(),
             h4: String.t(),
-            i1: non_neg_integer(),
-            i2: non_neg_integer(),
-            i3: non_neg_integer(),
-            i4: non_neg_integer(),
-            i5: non_neg_integer(),
+            i1: non_neg_integer() | nil,
+            i2: non_neg_integer() | nil,
+            i3: non_neg_integer() | nil,
+            i4: non_neg_integer() | nil,
+            i5: non_neg_integer() | nil,
             header_protection_key: String.t() | nil
           }
 

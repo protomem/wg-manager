@@ -1,0 +1,21 @@
+[Unit]
+Description=WGM agent (read-only observer)
+After=network.target
+Before=wg-quick.target awg-quick.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/wgm/current
+Environment=HOME=/root
+Environment=WGM_MODE=agent
+EnvironmentFile=-/etc/wgm/cookie.env
+EnvironmentFile=-/etc/wgm/agent.env
+ExecStart=/opt/wgm/current/bin/wgm start
+ExecStop=/opt/wgm/current/bin/wgm stop
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
