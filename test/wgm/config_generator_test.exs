@@ -4,12 +4,13 @@ defmodule WGM.ConfigGeneratorTest do
   alias WGM.{Instance, Peer}
   alias WGM.ConfigGenerator
 
-  describe "generate_server_config/2" do
+  describe "generate_server_config/3" do
     test "generates WG server config" do
       instance = wg_instance()
       peer = wg_server_peer()
 
-      assert {:ok, config} = ConfigGenerator.generate_server_config(instance, [peer])
+      assert {:ok, config} =
+               ConfigGenerator.generate_server_config(instance, [peer], instance.private_key)
 
       assert config == ~s"""
              [Interface]
@@ -31,7 +32,8 @@ defmodule WGM.ConfigGeneratorTest do
       instance = awg_instance()
       peer = awg_server_peer()
 
-      assert {:ok, config} = ConfigGenerator.generate_server_config(instance, [peer])
+      assert {:ok, config} =
+               ConfigGenerator.generate_server_config(instance, [peer], instance.private_key)
 
       # Серверный конфиг содержит только общие параметры (S1–S4, H1–H4, HeaderProtectionKey).
       assert config == ~s"""
@@ -62,14 +64,15 @@ defmodule WGM.ConfigGeneratorTest do
       instance = %{awg_instance() | awg_params: %{awg_params() | jc: -1}}
 
       assert {:error, _msg} =
-               ConfigGenerator.generate_server_config(instance, [awg_server_peer()])
+               ConfigGenerator.generate_server_config(instance, [awg_server_peer()], "ignored")
     end
 
     test "generates WG-compatible AWG server config when masking disabled" do
       instance = %{awg_instance() | awg_params: disabled_awg_params()}
       peer = %{awg_server_peer() | persistent_keepalive: "off"}
 
-      assert {:ok, config} = ConfigGenerator.generate_server_config(instance, [peer])
+      assert {:ok, config} =
+               ConfigGenerator.generate_server_config(instance, [peer], instance.private_key)
 
       assert config == ~s"""
              [Interface]
@@ -89,8 +92,17 @@ defmodule WGM.ConfigGeneratorTest do
       instance = %{awg_instance() | awg_params: params}
       peer = %{awg_server_peer() | persistent_keepalive: "off"}
 
-      assert {:ok, config} = ConfigGenerator.generate_server_config(instance, [peer])
+      assert {:ok, config} =
+               ConfigGenerator.generate_server_config(instance, [peer], instance.private_key)
+
       refute config =~ "HeaderProtectionKey"
+    end
+
+    test "rejects nil private key for server config" do
+      instance = %{wg_instance() | private_key: nil}
+
+      assert {:error, "Private key is required"} =
+               ConfigGenerator.generate_server_config(instance, [wg_server_peer()], nil)
     end
   end
 

@@ -99,7 +99,7 @@ end
 
 print_config.(
   "WG серверный конфиг",
-  ConfigGenerator.generate_server_config(wg_instance, [wg_peer])
+  ConfigGenerator.generate_server_config(wg_instance, [wg_peer], wg_instance.private_key)
 )
 
 print_config.(
@@ -109,7 +109,7 @@ print_config.(
 
 print_config.(
   "AWG серверный конфиг",
-  ConfigGenerator.generate_server_config(awg_instance, [awg_peer])
+  ConfigGenerator.generate_server_config(awg_instance, [awg_peer], awg_instance.private_key)
 )
 
 print_config.(

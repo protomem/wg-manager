@@ -213,10 +213,10 @@ defmodule WGM.Controller do
 
     result =
       execute_command(state, command_id, "create_instance", attrs[:id], summary, fn ->
-        with :ok <- validate_node_exists(state.conn, attrs[:node_id]),
-             {:ok, instance} <- build_instance(state, attrs),
-             :ok <- Repo.insert_instance(state.conn, instance) do
-          {:ok, instance.id}
+        with {:ok, node} <- fetch_node(state.conn, attrs[:node_id]),
+             {:ok, instance, action} <- build_instance(state, node, attrs),
+             :ok <- maybe_insert_instance(state.conn, instance, action) do
+          {:ok, attrs[:id]}
         else
           {:error, reason} -> {:error, reason}
         end
@@ -430,65 +430,83 @@ defmodule WGM.Controller do
   defp to_text(value) when is_binary(value), do: value
   defp to_text(value), do: inspect(value)
 
-  defp validate_node_exists(conn, node_id) do
-    if Repo.get_node(conn, node_id) do
-      :ok
-    else
-      {:error, "Node not found"}
+  defp fetch_node(conn, node_id) do
+    case Repo.get_node(conn, node_id) do
+      nil -> {:error, "Node not found"}
+      node -> {:ok, node}
     end
   end
 
-  defp build_instance(state, attrs) do
-    protocol = attrs[:protocol]
-    node_id = attrs[:node_id]
+  defp build_instance(state, node, attrs) do
     instance_id = attrs[:id]
 
-    awg_params =
-      case {protocol, attrs[:awg_params]} do
-        {:awg, nil} ->
-          {:error, "AWG params are required"}
-
-        {:awg, params} ->
-          params = struct(Instance.AWGParams, params)
-
-          case AWGParamsValidator.validate(params) do
-            :ok -> params
-            {:error, reason} -> {:error, reason}
-          end
-
-        {:wg, _} ->
-          nil
-      end
-
-    if match?({:error, _}, awg_params) do
-      awg_params
-    else
-      node = Repo.get_node(state.conn, node_id)
-
-      case state.agent_adapter.generate_keypair(node, instance_id, protocol) do
-        {:ok, public_key} ->
-          instance = %Instance{
-            id: instance_id,
-            node_id: node_id,
-            name: attrs[:name],
-            protocol: protocol,
-            listen_port: attrs[:listen_port],
-            subnet: attrs[:subnet],
-            private_key: nil,
-            public_key: public_key,
-            address: attrs[:address],
-            dns: attrs[:dns],
-            mtu: attrs[:mtu],
-            awg_params: awg_params
-          }
-
-          {:ok, instance}
-
-        {:error, reason} ->
-          {:error, reason}
-      end
+    case Repo.get_instance(state.conn, instance_id) do
+      nil -> build_new_instance(state, node, attrs)
+      existing -> validate_existing_instance(state, node, existing, attrs)
     end
   end
+
+  defp build_new_instance(state, node, attrs) do
+    protocol = attrs[:protocol]
+    instance_id = attrs[:id]
+
+    with {:ok, awg_params} <- build_awg_params(protocol, attrs[:awg_params]),
+         {:ok, public_key} <- state.agent_adapter.generate_keypair(node, instance_id, protocol) do
+      instance = %Instance{
+        id: instance_id,
+        node_id: node.id,
+        name: attrs[:name],
+        protocol: protocol,
+        listen_port: attrs[:listen_port],
+        subnet: attrs[:subnet],
+        private_key: nil,
+        public_key: public_key,
+        address: attrs[:address],
+        dns: attrs[:dns],
+        mtu: attrs[:mtu],
+        awg_params: awg_params
+      }
+
+      {:ok, instance, :new}
+    end
+  end
+
+  defp build_awg_params(:awg, nil), do: {:error, "AWG params are required"}
+
+  defp build_awg_params(:awg, params) do
+    params = struct(Instance.AWGParams, params)
+
+    case AWGParamsValidator.validate(params) do
+      :ok -> {:ok, params}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp build_awg_params(:wg, _), do: {:ok, nil}
+
+  defp validate_existing_instance(state, node, existing, attrs) do
+    protocol = attrs[:protocol]
+
+    cond do
+      existing.node_id != node.id ->
+        {:error, "Instance already exists on another node"}
+
+      existing.protocol != protocol ->
+        {:error, "Instance protocol mismatch"}
+
+      true ->
+        stored_public_key = existing.public_key
+
+        case state.agent_adapter.generate_keypair(node, attrs[:id], protocol) do
+          {:ok, ^stored_public_key} -> {:ok, existing, :existing}
+          {:ok, _other} -> {:error, "Instance public key mismatch"}
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
+  defp maybe_insert_instance(_conn, _instance, :existing), do: :ok
+  defp maybe_insert_instance(conn, instance, :new), do: Repo.insert_instance(conn, instance)
 
   defp build_peer(attrs, keys, psk) do
     %Peer{

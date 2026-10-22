@@ -131,6 +131,87 @@ defmodule WGM.ControllerTest do
 
       assert Controller.list_instances(controller) == []
     end
+
+    test "is idempotent when called again with the same instance id and protocol" do
+      controller = start_controller()
+      register_node(controller, "node-1")
+
+      FakeAgentAdapter.set_keypair("node-1", "inst-1", :wg, "server-pub")
+
+      attrs = %{
+        id: "inst-1",
+        node_id: "node-1",
+        name: "wg1",
+        protocol: :wg,
+        listen_port: 51820,
+        subnet: "10.0.0.0/24",
+        address: "10.0.0.1/24"
+      }
+
+      assert {:ok, "inst-1"} = Controller.create_instance(controller, "cmd-inst-1", attrs)
+      assert {:ok, "inst-1"} = Controller.create_instance(controller, "cmd-inst-2", attrs)
+
+      assert [%Instance{public_key: "server-pub"}] =
+               Controller.list_instances(controller, "node-1")
+
+      assert Controller.audit(controller)
+             |> Enum.filter(&(&1.type == "create_instance"))
+             |> length() == 2
+    end
+
+    test "returns error when instance exists on another node or with a different protocol" do
+      controller = start_controller()
+      register_node(controller, "node-1")
+      register_node(controller, "node-2")
+
+      FakeAgentAdapter.set_keypair("node-1", "inst-1", :wg, "server-pub")
+
+      attrs = %{
+        id: "inst-1",
+        node_id: "node-1",
+        name: "wg1",
+        protocol: :wg,
+        listen_port: 51820,
+        subnet: "10.0.0.0/24",
+        address: "10.0.0.1/24"
+      }
+
+      assert {:ok, "inst-1"} = Controller.create_instance(controller, "cmd-inst-1", attrs)
+
+      other_node_attrs = %{attrs | node_id: "node-2"}
+
+      assert {:error, "Instance already exists on another node"} =
+               Controller.create_instance(controller, "cmd-inst-2", other_node_attrs)
+
+      other_protocol_attrs = %{attrs | protocol: :awg}
+
+      assert {:error, "Instance protocol mismatch"} =
+               Controller.create_instance(controller, "cmd-inst-3", other_protocol_attrs)
+    end
+
+    test "returns error when agent public key does not match the stored one" do
+      controller = start_controller()
+      register_node(controller, "node-1")
+
+      FakeAgentAdapter.set_keypair("node-1", "inst-1", :wg, "server-pub")
+
+      attrs = %{
+        id: "inst-1",
+        node_id: "node-1",
+        name: "wg1",
+        protocol: :wg,
+        listen_port: 51820,
+        subnet: "10.0.0.0/24",
+        address: "10.0.0.1/24"
+      }
+
+      assert {:ok, "inst-1"} = Controller.create_instance(controller, "cmd-inst-1", attrs)
+
+      FakeAgentAdapter.set_keypair("node-1", "inst-1", :wg, "different-pub")
+
+      assert {:error, "Instance public key mismatch"} =
+               Controller.create_instance(controller, "cmd-inst-2", attrs)
+    end
   end
 
   describe "create_peer/3" do

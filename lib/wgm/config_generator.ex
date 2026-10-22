@@ -22,15 +22,22 @@ defmodule WGM.ConfigGenerator do
 
   @doc """
   Генерирует серверный конфиг инстанса для заданного списка пиров.
+
+  Приватный ключ сервера передаётся явно, чтобы контроллер не генерировал
+  конфиг с `nil`-ключом.
   """
-  @spec generate_server_config(Instance.t(), [Peer.t()]) ::
+  @spec generate_server_config(Instance.t(), [Peer.t()], String.t()) ::
           {:ok, config_string()} | {:error, String.t()}
-  def generate_server_config(instance, peers) do
+  def generate_server_config(_instance, _peers, nil) do
+    {:error, "Private key is required"}
+  end
+
+  def generate_server_config(instance, peers, private_key) do
     with :ok <- validate_instance(instance) do
       interface_lines =
         build_interface_lines(
           instance,
-          instance.private_key,
+          private_key,
           instance.address,
           instance.listen_port,
           instance.dns,

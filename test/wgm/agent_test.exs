@@ -2,9 +2,11 @@ defmodule WGM.AgentTest do
   use ExUnit.Case
 
   alias WGM.{Agent, Agent.Observer, Agent.Status, CLI.FakeAdapter, Instance, Node}
+  alias WGM.Agent.KeyStore.Fake, as: FakeKeyStore
 
   setup do
     FakeAdapter.start()
+    FakeKeyStore.start()
     :ok
   end
 
@@ -28,7 +30,13 @@ defmodule WGM.AgentTest do
       FakeAdapter.set_dump(:wg, "wggs", dump)
       FakeAdapter.set_interface_state("wggs", :up)
 
-      {:ok, agent} = Agent.start_link(node: node, instances: [instance], adapter: FakeAdapter)
+      {:ok, agent} =
+        Agent.start_link(
+          node: node,
+          instances: [instance],
+          adapter: FakeAdapter,
+          key_store: FakeKeyStore
+        )
 
       status = Agent.status(agent)
       assert status.node_id == "node-gs"
@@ -39,7 +47,9 @@ defmodule WGM.AgentTest do
   describe "Agent.generate_keypair/3" do
     test "returns a public key and stores the private key on the agent" do
       node = %Node{id: "node-kg", name: "entry", address: "193.233.91.130", role: :entry}
-      {:ok, agent} = Agent.start_link(node: node, instances: [], adapter: FakeAdapter)
+
+      {:ok, agent} =
+        Agent.start_link(node: node, instances: [], adapter: FakeAdapter, key_store: FakeKeyStore)
 
       assert {:ok, "public-for-private-key-1"} =
                Agent.generate_keypair(agent, "inst-kg", :wg)
@@ -47,11 +57,41 @@ defmodule WGM.AgentTest do
 
     test "returns different keys for different instances" do
       node = %Node{id: "node-kg", name: "entry", address: "193.233.91.130", role: :entry}
-      {:ok, agent} = Agent.start_link(node: node, instances: [], adapter: FakeAdapter)
+
+      {:ok, agent} =
+        Agent.start_link(node: node, instances: [], adapter: FakeAdapter, key_store: FakeKeyStore)
 
       assert {:ok, pub1} = Agent.generate_keypair(agent, "inst-1", :wg)
       assert {:ok, pub2} = Agent.generate_keypair(agent, "inst-2", :wg)
       refute pub1 == pub2
+    end
+
+    test "persists the private key and returns the same public key on repeated calls" do
+      node = %Node{id: "node-persist", name: "entry", address: "193.233.91.130", role: :entry}
+
+      {:ok, agent1} =
+        Agent.start_link(
+          node: node,
+          instances: [],
+          adapter: FakeAdapter,
+          key_store: FakeKeyStore
+        )
+
+      assert {:ok, pub1} = Agent.generate_keypair(agent1, "inst-persist", :wg)
+
+      {:ok, agent2} =
+        Agent.start_link(
+          node: node,
+          instances: [],
+          adapter: FakeAdapter,
+          key_store: FakeKeyStore
+        )
+
+      assert {:ok, pub2} = Agent.generate_keypair(agent2, "inst-persist", :wg)
+      assert pub1 == pub2
+
+      assert FakeKeyStore.read_private_key(:wg, "inst-persist") ==
+               {:ok, "private-key-1"}
     end
   end
 
