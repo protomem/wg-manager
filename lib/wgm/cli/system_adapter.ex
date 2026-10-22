@@ -21,20 +21,66 @@ defmodule WGM.CLI.SystemAdapter do
     run_command("wg", ["genpsk"])
   end
 
+  @impl true
+  def show_dump(protocol, interface) do
+    run_command(bin(protocol), ["show", "dump", interface])
+  end
+
+  @impl true
+  def interface_state(interface) do
+    run_command("ip", ["link", "show", interface], &parse_interface_state/1)
+  end
+
+  defp parse_interface_state(output) do
+    flags = interface_flags(output)
+
+    cond do
+      String.contains?(flags, "UP") -> {:ok, :up}
+      String.contains?(output, "state DOWN") -> {:ok, :down}
+      flags != "" -> {:ok, :down}
+      true -> {:ok, :unknown}
+    end
+  end
+
+  defp interface_flags(output) do
+    case Regex.run(~r/<([^>]*)>/, output) do
+      [_, flags] -> flags
+      nil -> ""
+    end
+  end
+
   defp bin(:wg), do: "wg"
   defp bin(:awg), do: "awg"
 
-  defp run_command(cmd, args) do
-    case System.cmd(cmd, args, stderr_to_stdout: true) do
-      {output, 0} -> {:ok, String.trim(output)}
-      {output, _} -> {:error, String.trim(output)}
+  defp run_command(cmd, args, output_handler \\ &{:ok, String.trim(&1)}) do
+    case safe_cmd(cmd, args, []) do
+      {:ok, {output, 0}} -> output_handler.(output)
+      {:ok, {output, _}} -> {:error, String.trim(output)}
+      {:error, reason} -> {:error, reason}
     end
   end
 
   defp run_command_with_input(cmd, args, input) do
-    case System.cmd(cmd, args, stdin: input, stderr_to_stdout: true) do
-      {output, 0} -> {:ok, String.trim(output)}
-      {output, _} -> {:error, String.trim(output)}
+    case safe_cmd(cmd, args, stdin: input) do
+      {:ok, {output, 0}} -> {:ok, String.trim(output)}
+      {:ok, {output, _}} -> {:error, String.trim(output)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp safe_cmd(cmd, args, opts) do
+    try do
+      {:ok, System.cmd(cmd, args, [stderr_to_stdout: true] ++ opts)}
+    rescue
+      e in ErlangError ->
+        {:error, command_error_reason(cmd, e)}
+    end
+  end
+
+  defp command_error_reason(cmd, %ErlangError{original: reason}) do
+    case reason do
+      :enoent -> "Command not found: #{cmd}"
+      _ -> "Failed to run #{cmd}: #{inspect(reason)}"
     end
   end
 end

@@ -48,18 +48,7 @@ defmodule WGM.Parser do
   """
   @spec parse_wg_show_dump(String.t()) :: {:ok, wg_status()} | {:error, String.t()}
   def parse_wg_show_dump(dump) do
-    lines = normalize_lines(dump)
-
-    case lines do
-      [device_line | peer_lines] ->
-        with {:ok, device} <- parse_wg_device(device_line),
-             {:ok, peers} <- parse_peers(peer_lines, :wg) do
-          {:ok, Map.put(device, :peers, peers)}
-        end
-
-      _ ->
-        {:error, "Empty dump"}
-    end
+    parse_dump(dump, &parse_wg_device/1, :wg)
   end
 
   @doc """
@@ -67,12 +56,16 @@ defmodule WGM.Parser do
   """
   @spec parse_awg_show_dump(String.t()) :: {:ok, awg_status()} | {:error, String.t()}
   def parse_awg_show_dump(dump) do
+    parse_dump(dump, &parse_awg_device/1, :awg)
+  end
+
+  defp parse_dump(dump, device_parser, protocol) do
     lines = normalize_lines(dump)
 
     case lines do
       [device_line | peer_lines] ->
-        with {:ok, device} <- parse_awg_device(device_line),
-             {:ok, peers} <- parse_peers(peer_lines, :awg) do
+        with {:ok, device} <- device_parser.(device_line),
+             {:ok, peers} <- parse_peers(peer_lines, protocol) do
           {:ok, Map.put(device, :peers, peers)}
         end
 

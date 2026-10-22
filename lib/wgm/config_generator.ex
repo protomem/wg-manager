@@ -165,7 +165,9 @@ defmodule WGM.ConfigGenerator do
     ] ++ header_protection_line(params)
   end
 
-  defp header_protection_line(%Instance.AWGParams{header_protection_key: nil}), do: []
+  defp header_protection_line(%Instance.AWGParams{header_protection_key: key})
+       when key in [nil, "(none)"],
+       do: []
 
   defp header_protection_line(%Instance.AWGParams{} = params),
     do: ["HeaderProtectionKey = #{params.header_protection_key}"]

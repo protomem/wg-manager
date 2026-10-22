@@ -28,6 +28,10 @@ defmodule WGM.AWGParamsValidator do
 
   @doc """
   Проверяет, выключена ли маскировка (WG-совместимый режим).
+
+  WG-совместимый режим: Jc/Jmin/Jmax/S1/S2 равны нулю и H1–H4 содержат
+  одно из значений «выключено»: `"0"`, `"off"`, `"0-0"` или стандартные
+  WG-значения `"1".."4"`.
   """
   @spec masking_disabled?(AWGParams.t() | map()) :: boolean()
   def masking_disabled?(%AWGParams{} = params) do
@@ -43,6 +47,9 @@ defmodule WGM.AWGParamsValidator do
   end
 
   def masking_disabled?(_), do: false
+
+  defp h_disabled?(value) when value in ["0", "off", "0-0", "1", "2", "3", "4"], do: true
+  defp h_disabled?(_), do: false
 
   defp validate_jc(0), do: :ok
   defp validate_jc(jc) when is_integer(jc) and jc >= 1 and jc <= 128, do: :ok
@@ -78,7 +85,7 @@ defmodule WGM.AWGParamsValidator do
   defp validate_h_ranges(params) do
     ranges = [params.h1, params.h2, params.h3, params.h4]
 
-    if disabled_masking?(ranges) do
+    if Enum.all?(ranges, &h_disabled?/1) do
       :ok
     else
       parsed = Enum.map(ranges, &parse_range/1)
@@ -103,7 +110,9 @@ defmodule WGM.AWGParamsValidator do
     end
   end
 
-  defp header_protection_enabled?(key), do: is_binary(key) and String.trim(key) != ""
+  defp header_protection_enabled?(key) do
+    is_binary(key) and String.trim(key) not in ["", "(none)"]
+  end
 
   defp validate_s_for_header_protection(s, _name) when is_integer(s) and s >= 12, do: :ok
 
@@ -112,14 +121,6 @@ defmodule WGM.AWGParamsValidator do
 
   defp validate_s_for_header_protection(_s, name),
     do: {:error, "#{name} must be a valid integer"}
-
-  defp disabled_masking?(ranges) do
-    Enum.all?(ranges, fn r -> r in ["0", "off", "0-0"] end)
-  end
-
-  defp h_disabled?(value) when value in ["0", "off", "0-0"], do: true
-  defp h_disabled?(value) when value in ["1", "2", "3", "4"], do: true
-  defp h_disabled?(_), do: false
 
   defp parse_range("off"), do: {:ok, nil}
   defp parse_range("0-0"), do: {:ok, nil}

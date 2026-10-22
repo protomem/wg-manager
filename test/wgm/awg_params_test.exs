@@ -161,6 +161,11 @@ defmodule WGM.AWGParamsTest do
       params = awg_params(header_protection_key: "hpk", s1: 12, s2: 12, s3: 12, s4: 12)
       assert AWGParamsValidator.validate(params) == :ok
     end
+
+    test "treats (none) header protection key as disabled" do
+      params = awg_params(header_protection_key: "(none)", s1: 0, s2: 0, s3: 0, s4: 0)
+      assert AWGParamsValidator.validate(params) == :ok
+    end
   end
 
   defp awg_params(overrides) do

@@ -83,6 +83,15 @@ defmodule WGM.ConfigGeneratorTest do
              AllowedIPs = 10.0.1.2/32
              """
     end
+
+    test "does not emit HeaderProtectionKey when key is (none)" do
+      params = %{disabled_awg_params() | header_protection_key: "(none)"}
+      instance = %{awg_instance() | awg_params: params}
+      peer = %{awg_server_peer() | persistent_keepalive: "off"}
+
+      assert {:ok, config} = ConfigGenerator.generate_server_config(instance, [peer])
+      refute config =~ "HeaderProtectionKey"
+    end
   end
 
   describe "generate_client_config/3" do
