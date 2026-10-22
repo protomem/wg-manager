@@ -325,7 +325,7 @@ defmodule WGM.Controller.Repo do
       protocol TEXT NOT NULL,
       listen_port INTEGER NOT NULL,
       subnet TEXT NOT NULL,
-      private_key TEXT NOT NULL,
+      private_key TEXT,
       public_key TEXT NOT NULL,
       address TEXT NOT NULL,
       dns TEXT,
@@ -590,22 +590,40 @@ defmodule WGM.Controller.Repo do
   end
 
   defp execute(conn, sql, params) do
-    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
-         :ok <- Sqlite3.bind(stmt, params) do
-      case Sqlite3.step(conn, stmt) do
-        :done -> :ok
-        error -> error
-      end
+    case Sqlite3.prepare(conn, sql) do
+      {:ok, stmt} ->
+        try do
+          with :ok <- Sqlite3.bind(stmt, params) do
+            case Sqlite3.step(conn, stmt) do
+              :done -> :ok
+              error -> error
+            end
+          end
+        after
+          Sqlite3.release(conn, stmt)
+        end
+
+      error ->
+        error
     end
   end
 
   defp query(conn, sql, params \\ []) do
-    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
-         :ok <- Sqlite3.bind(stmt, params),
-         {:ok, rows} <- Sqlite3.fetch_all(conn, stmt, 1000) do
-      rows
-    else
-      {:error, reason} -> raise "Query failed: #{reason}"
+    case Sqlite3.prepare(conn, sql) do
+      {:ok, stmt} ->
+        try do
+          with :ok <- Sqlite3.bind(stmt, params),
+               {:ok, rows} <- Sqlite3.fetch_all(conn, stmt, 1000) do
+            rows
+          else
+            {:error, reason} -> raise "Query failed: #{reason}"
+          end
+        after
+          Sqlite3.release(conn, stmt)
+        end
+
+      {:error, reason} ->
+        raise "Query failed: #{reason}"
     end
   end
 

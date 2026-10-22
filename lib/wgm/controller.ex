@@ -214,7 +214,7 @@ defmodule WGM.Controller do
     result =
       execute_command(state, command_id, "create_instance", attrs[:id], summary, fn ->
         with :ok <- validate_node_exists(state.conn, attrs[:node_id]),
-             {:ok, instance} <- build_instance(attrs),
+             {:ok, instance} <- build_instance(state, attrs),
              :ok <- Repo.insert_instance(state.conn, instance) do
           {:ok, instance.id}
         else
@@ -303,8 +303,14 @@ defmodule WGM.Controller do
     log_result = fn _config -> "stored client config for peer #{peer_id}" end
 
     replay = fn
-      %{status: "ok"} -> {:ok, Repo.get_client_config(state.conn, peer_id)}
-      %{status: "error", result: reason} -> {:error, reason}
+      %{status: "ok"} ->
+        case Repo.get_client_config(state.conn, peer_id) do
+          nil -> {:error, "Client config not found"}
+          config -> {:ok, config}
+        end
+
+      %{status: "error", result: reason} ->
+        {:error, reason}
     end
 
     result =
@@ -432,8 +438,10 @@ defmodule WGM.Controller do
     end
   end
 
-  defp build_instance(attrs) do
+  defp build_instance(state, attrs) do
     protocol = attrs[:protocol]
+    node_id = attrs[:node_id]
+    instance_id = attrs[:id]
 
     awg_params =
       case {protocol, attrs[:awg_params]} do
@@ -455,22 +463,30 @@ defmodule WGM.Controller do
     if match?({:error, _}, awg_params) do
       awg_params
     else
-      instance = %Instance{
-        id: attrs[:id],
-        node_id: attrs[:node_id],
-        name: attrs[:name],
-        protocol: protocol,
-        listen_port: attrs[:listen_port],
-        subnet: attrs[:subnet],
-        private_key: attrs[:private_key],
-        public_key: attrs[:public_key],
-        address: attrs[:address],
-        dns: attrs[:dns],
-        mtu: attrs[:mtu],
-        awg_params: awg_params
-      }
+      node = Repo.get_node(state.conn, node_id)
 
-      {:ok, instance}
+      case state.agent_adapter.generate_keypair(node, instance_id, protocol) do
+        {:ok, public_key} ->
+          instance = %Instance{
+            id: instance_id,
+            node_id: node_id,
+            name: attrs[:name],
+            protocol: protocol,
+            listen_port: attrs[:listen_port],
+            subnet: attrs[:subnet],
+            private_key: nil,
+            public_key: public_key,
+            address: attrs[:address],
+            dns: attrs[:dns],
+            mtu: attrs[:mtu],
+            awg_params: awg_params
+          }
+
+          {:ok, instance}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
   end
 

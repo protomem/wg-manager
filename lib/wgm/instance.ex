@@ -14,7 +14,7 @@ defmodule WGM.Instance do
           protocol: protocol(),
           listen_port: pos_integer(),
           subnet: String.t(),
-          private_key: String.t(),
+          private_key: String.t() | nil,
           public_key: String.t(),
           address: String.t(),
           dns: String.t() | nil,

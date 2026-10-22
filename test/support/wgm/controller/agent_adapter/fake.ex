@@ -30,11 +30,25 @@ defmodule WGM.Controller.AgentAdapter.Fake do
     :ok
   end
 
+  @spec set_keypair(String.t(), String.t(), WGM.CLI.Adapter.protocol(), String.t()) :: :ok
+  def set_keypair(node_id, instance_id, protocol, public_key) do
+    :ets.insert(__MODULE__, {{:keypair, node_id, instance_id, protocol}, public_key})
+    :ok
+  end
+
   @impl true
   def status(%Node{id: node_id}) do
     case :ets.lookup(__MODULE__, {:status, node_id}) do
       [{_, status}] -> status
       [] -> {:error, "No status fixture for #{node_id}"}
+    end
+  end
+
+  @impl true
+  def generate_keypair(%Node{id: node_id}, instance_id, protocol) do
+    case :ets.lookup(__MODULE__, {:keypair, node_id, instance_id, protocol}) do
+      [{_, public_key}] -> {:ok, public_key}
+      [] -> {:error, "No keypair fixture for #{node_id}/#{instance_id}/#{protocol}"}
     end
   end
 end

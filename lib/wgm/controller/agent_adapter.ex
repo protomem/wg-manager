@@ -9,4 +9,12 @@ defmodule WGM.Controller.AgentAdapter do
   Запрашивает статус агента на узле.
   """
   @callback status(Node.t()) :: {:ok, WGM.Agent.Status.t()} | {:error, String.t()}
+
+  @doc """
+  Просит агента узла сгенерировать серверную ключевую пару для инстанса.
+
+  Агент хранит приватный ключ локально и возвращает только публичный ключ.
+  """
+  @callback generate_keypair(Node.t(), instance_id :: String.t(), WGM.CLI.Adapter.protocol()) ::
+              {:ok, String.t()} | {:error, String.t()}
 end

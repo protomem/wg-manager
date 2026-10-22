@@ -36,6 +36,25 @@ defmodule WGM.AgentTest do
     end
   end
 
+  describe "Agent.generate_keypair/3" do
+    test "returns a public key and stores the private key on the agent" do
+      node = %Node{id: "node-kg", name: "entry", address: "193.233.91.130", role: :entry}
+      {:ok, agent} = Agent.start_link(node: node, instances: [], adapter: FakeAdapter)
+
+      assert {:ok, "public-for-private-key-1"} =
+               Agent.generate_keypair(agent, "inst-kg", :wg)
+    end
+
+    test "returns different keys for different instances" do
+      node = %Node{id: "node-kg", name: "entry", address: "193.233.91.130", role: :entry}
+      {:ok, agent} = Agent.start_link(node: node, instances: [], adapter: FakeAdapter)
+
+      assert {:ok, pub1} = Agent.generate_keypair(agent, "inst-1", :wg)
+      assert {:ok, pub2} = Agent.generate_keypair(agent, "inst-2", :wg)
+      refute pub1 == pub2
+    end
+  end
+
   describe "Observer.observe/3" do
     test "returns structured status for a single WG instance" do
       node = %Node{id: "node-1", name: "entry", address: "193.233.91.130", role: :entry}
