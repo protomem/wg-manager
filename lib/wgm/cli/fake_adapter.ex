@@ -82,8 +82,15 @@ if Mix.env() != :prod do
     def up(protocol, interface, config_path) do
       case record_call({:up, protocol, interface, config_path}) do
         :ok ->
-          set_interface_state(interface, :up)
-          :ok
+          # `wg-quick up` fails when the interface already exists, even if it
+          # is administratively down. Only create it when it is truly absent.
+          if interface_exists?(interface) do
+            {:error, "already exists"}
+          else
+            set_interface_state(interface, :up)
+            restore_stashed_dump(protocol, interface)
+            :ok
+          end
 
         other ->
           other
@@ -94,8 +101,13 @@ if Mix.env() != :prod do
     def down(protocol, interface, config_path) do
       case record_call({:down, protocol, interface, config_path}) do
         :ok ->
-          # wg-quick down удаляет интерфейс; последующий ip link show даёт ошибку.
+          # `wg-quick down` removes the interface and its dump disappears with it.
+          # We keep a transient copy so that a subsequent `up` on the same
+          # interface can verify against a realistic dump (the config file is
+          # preserved across down/up in the real tools).
+          stash_dump_for_restore(protocol, interface)
           :ets.delete(__MODULE__, {:state, interface})
+          :ets.delete(__MODULE__, {:dump, protocol, interface})
           :ok
 
         other ->
@@ -158,14 +170,14 @@ if Mix.env() != :prod do
       end
     end
 
-    defp maybe_apply_result({:up, protocol, interface}) do
+    defp maybe_apply_result({:up, protocol, interface, _}) do
       case :ets.lookup(__MODULE__, {:up_result, protocol, interface}) do
         [{_, result}] -> result
         [] -> :ok
       end
     end
 
-    defp maybe_apply_result({:down, protocol, interface}) do
+    defp maybe_apply_result({:down, protocol, interface, _}) do
       case :ets.lookup(__MODULE__, {:down_result, protocol, interface}) do
         [{_, result}] -> result
         [] -> :ok
@@ -174,6 +186,41 @@ if Mix.env() != :prod do
 
     defp maybe_apply_result({_other, _protocol, _interface, _config_path}) do
       :ok
+    end
+
+    defp interface_exists?(interface) do
+      case :ets.lookup(__MODULE__, {:state, interface}) do
+        [] -> false
+        [{_, :unknown}] -> false
+        _ -> true
+      end
+    end
+
+    defp stash_dump_for_restore(protocol, interface) do
+      case :ets.lookup(__MODULE__, {:dump, protocol, interface}) do
+        [{_, dump}] ->
+          :ets.insert(__MODULE__, {{:dump_after_down, protocol, interface}, dump})
+
+        [] ->
+          :ok
+      end
+    end
+
+    defp restore_stashed_dump(protocol, interface) do
+      case :ets.lookup(__MODULE__, {:dump, protocol, interface}) do
+        [] ->
+          case :ets.lookup(__MODULE__, {:dump_after_down, protocol, interface}) do
+            [{_, dump}] ->
+              :ets.insert(__MODULE__, {{:dump, protocol, interface}, dump})
+              :ets.delete(__MODULE__, {:dump_after_down, protocol, interface})
+
+            [] ->
+              :ok
+          end
+
+        _ ->
+          :ok
+      end
     end
 
     defp next_counter do

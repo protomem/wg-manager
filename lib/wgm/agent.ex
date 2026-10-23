@@ -204,26 +204,34 @@ defmodule WGM.Agent do
     end
   end
 
-  defp update_instances_after_apply(state, instance, {:ok, _result}, :absent) do
-    %{state | instances: Enum.reject(state.instances, &(&1.id == instance.id))}
+  defp update_instances_after_apply(state, instance, {:ok, result}, :absent) do
+    if Map.get(result, :dry_run) do
+      state
+    else
+      %{state | instances: Enum.reject(state.instances, &(&1.id == instance.id))}
+    end
   end
 
-  defp update_instances_after_apply(state, instance, {:ok, _result}, action)
+  defp update_instances_after_apply(state, instance, {:ok, result}, action)
        when action in [:up, :down, :restart] do
-    target_state = action_to_target_state(action)
-
-    if Enum.any?(state.instances, &(&1.id == instance.id)) do
-      new_instances =
-        Enum.map(state.instances, fn
-          %{id: id} when id == instance.id -> %{instance | target_state: target_state}
-          other -> other
-        end)
-
-      %{state | instances: new_instances}
+    if Map.get(result, :dry_run) do
+      state
     else
-      # Новый инстанс, созданный через apply_instance(:up/:restart), должен
-      # попасть в наблюдение агента без рестарта (см. ревью wgm-65b6323).
-      %{state | instances: [%{instance | target_state: target_state} | state.instances]}
+      target_state = action_to_target_state(action)
+
+      if Enum.any?(state.instances, &(&1.id == instance.id)) do
+        new_instances =
+          Enum.map(state.instances, fn
+            %{id: id} when id == instance.id -> %{instance | target_state: target_state}
+            other -> other
+          end)
+
+        %{state | instances: new_instances}
+      else
+        # Новый инстанс, созданный через apply_instance(:up/:restart), должен
+        # попасть в наблюдение агента без рестарта (см. ревью wgm-65b6323).
+        %{state | instances: [%{instance | target_state: target_state} | state.instances]}
+      end
     end
   end
 

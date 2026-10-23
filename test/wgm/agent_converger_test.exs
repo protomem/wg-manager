@@ -289,6 +289,39 @@ defmodule WGM.Agent.ConvergerTest do
     end
   end
 
+  describe "FakeAdapter result injection" do
+    test "set_up_result changes the result of up" do
+      FakeAdapter.set_up_result(:wg, "wg1", {:error, "already exists"})
+
+      assert {:error, "already exists"} =
+               FakeAdapter.up(:wg, "wg1", "/fake/wg/wg1.conf")
+    end
+
+    test "set_down_result changes the result of down" do
+      FakeAdapter.set_down_result(:wg, "wg1", {:error, "no such device"})
+
+      assert {:error, "no such device"} =
+               FakeAdapter.down(:wg, "wg1", "/fake/wg/wg1.conf")
+    end
+  end
+
+  describe "FakeAdapter dump fixture" do
+    test "down deletes the dump fixture" do
+      instance = build_instance("wg1", :wg)
+      FakeConfigStore.set_config(:wg, "wg1", "old-config\n")
+      FakeAdapter.set_interface_state("wg1", :up)
+      FakeAdapter.set_dump(:wg, "wg1", dump_for(instance))
+
+      state = build_state()
+
+      assert {:ok, %{action: :down, changed: true}} =
+               Converger.converge(state, instance, [], action: :down, confirm: true)
+
+      assert FakeAdapter.show_dump(:wg, "wg1") ==
+               {:error, "No dump fixture for wg wg1"}
+    end
+  end
+
   describe "converge/4 with peers" do
     test "verifies that expected peers are present in dump" do
       instance = build_instance("wg1", :wg)
@@ -352,7 +385,9 @@ defmodule WGM.Agent.ConvergerTest do
 
       assert FakeAdapter.calls() == []
 
-      # :up on down interface brings it back up
+      # :up on a down interface must first remove the existing interface,
+      # because a real `wg-quick up` fails with "already exists" when the
+      # interface is present (even if administratively down).
       FakeAdapter.reset()
       FakeAdapter.set_interface_state("wg1", :down)
       FakeAdapter.set_dump(:wg, "wg1", dump_for(instance))
@@ -360,7 +395,10 @@ defmodule WGM.Agent.ConvergerTest do
       assert {:ok, %{action: :up, changed: true}} =
                Converger.converge(state, instance, [], action: :up)
 
-      assert [{:up, :wg, "wg1", "/fake/wg/wg1.conf"}] = FakeAdapter.calls()
+      assert [
+               {:down, :wg, "wg1", "/fake/wg/wg1.conf"},
+               {:up, :wg, "wg1", "/fake/wg/wg1.conf"}
+             ] = FakeAdapter.calls()
 
       # :restart downs and ups
       FakeAdapter.reset()

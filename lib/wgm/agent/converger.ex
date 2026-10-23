@@ -291,8 +291,17 @@ defmodule WGM.Agent.Converger do
     apply_to_kernel(state, instance, :up, interface_state)
   end
 
-  defp apply_to_kernel(state, instance, :up, interface_state)
-       when interface_state in [:absent, :down] do
+  # A real `wg-quick up` fails with "already exists" when the interface is
+  # present but administratively down, so we tear it down first.
+  defp apply_to_kernel(state, instance, :up, :down) do
+    config_path = config_path(state, instance)
+
+    with :ok <- state.adapter.down(instance.protocol, instance.name, config_path) do
+      apply_to_kernel(state, instance, :up, :absent)
+    end
+  end
+
+  defp apply_to_kernel(state, instance, :up, :absent) do
     config_path = config_path(state, instance)
 
     case state.adapter.up(instance.protocol, instance.name, config_path) do

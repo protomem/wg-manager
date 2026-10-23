@@ -283,6 +283,43 @@ defmodule WGM.AgentTest do
       assert [%{instance_id: "inst-new", interface_state: :up}] = status.instances
     end
 
+    test "does not add instance to state.instances on dry run" do
+      node = %Node{id: "node-dry", name: "entry", address: "193.233.91.130", role: :entry}
+
+      instance = %Instance{
+        id: "inst-dry",
+        node_id: "node-dry",
+        name: "wgdry",
+        protocol: :wg,
+        listen_port: 51830,
+        subnet: "10.10.0.0/24",
+        private_key: nil,
+        public_key: "pub",
+        address: "10.0.0.1/24",
+        target_state: :configured
+      }
+
+      FakeKeyStore.set_private_key(:wg, "inst-dry", "priv")
+      FakeAdapter.set_dump(:wg, "wgdry", "priv\tpub\t51830\toff\n")
+      FakeAdapter.set_interface_state("wgdry", :up)
+
+      {:ok, agent} =
+        Agent.start_link(
+          node: node,
+          instances: [],
+          adapter: FakeAdapter,
+          key_store: FakeKeyStore,
+          config_store: FakeConfigStore,
+          read_only: false
+        )
+
+      assert {:ok, %{action: :up, dry_run: true, changed: true}} =
+               Agent.apply_instance(agent, instance, [], action: :up, dry_run: true)
+
+      status = Agent.status(agent)
+      assert status.instances == []
+    end
+
     test "applies saved configs at boot for instances with target_state :up" do
       node = %Node{id: "node-boot", name: "entry", address: "193.233.91.130", role: :entry}
 

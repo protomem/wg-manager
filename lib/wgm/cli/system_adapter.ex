@@ -13,7 +13,22 @@ defmodule WGM.CLI.SystemAdapter do
 
   @impl true
   def pubkey(private_key, protocol) do
-    run_command_with_input(bin(protocol), ["pubkey"], private_key)
+    # `wg pubkey` reads the private key from stdin. We use a temporary file
+    # with 0600 permissions instead of an unsupported :stdin/:input option.
+    tmp = Path.join(System.tmp_dir!(), "wgm-pubkey-#{:erlang.unique_integer([:positive])}.key")
+
+    try do
+      :ok = File.write(tmp, private_key)
+      :ok = File.chmod(tmp, 0o600)
+
+      case safe_cmd("sh", ["-c", "#{bin(protocol)} pubkey < #{tmp}"], stderr_to_stdout: true) do
+        {:ok, {output, 0}} -> {:ok, String.trim(output)}
+        {:ok, {output, _}} -> {:error, String.trim(output)}
+        {:error, reason} -> {:error, reason}
+      end
+    after
+      File.rm(tmp)
+    end
   end
 
   @impl true
@@ -103,14 +118,6 @@ defmodule WGM.CLI.SystemAdapter do
   defp run_command(cmd, args, output_handler \\ &{:ok, String.trim(&1)}) do
     case safe_cmd(cmd, args, []) do
       {:ok, {output, 0}} -> output_handler.(output)
-      {:ok, {output, _}} -> {:error, String.trim(output)}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp run_command_with_input(cmd, args, input) do
-    case safe_cmd(cmd, args, stdin: input) do
-      {:ok, {output, 0}} -> {:ok, String.trim(output)}
       {:ok, {output, _}} -> {:error, String.trim(output)}
       {:error, reason} -> {:error, reason}
     end
