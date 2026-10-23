@@ -106,6 +106,11 @@ defmodule WGM.ControllerAssembleCascadeTest do
       assert [%Peer{allowed_ips: "0.0.0.0/0"}] = entry_peers
       assert [%Peer{allowed_ips: "10.0.0.0/24,10.200.0.1/32"}] = exit_peers
 
+      [entry_peer] = entry_peers
+      [exit_peer] = exit_peers
+      assert entry_peer.preshared_key == exit_peer.preshared_key
+      assert entry_peer.preshared_key not in [nil, ""]
+
       entry_transit = Controller.get_instance(controller, "cascade-entry-transit")
       assert entry_transit.table == "off"
 

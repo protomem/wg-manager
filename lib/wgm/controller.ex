@@ -353,8 +353,9 @@ defmodule WGM.Controller do
                %Instance{} = entry_transit <- Repo.get_instance(state.conn, entry_transit_id),
                %Instance{} = exit_inst <- Repo.get_instance(state.conn, exit_id),
                peers = Builder.peer_attrs(entry_instance, entry_transit, exit_inst, exit_node),
-               {:ok, _} <- create_peer_from_attrs(state, peers.entry_peer),
-               {:ok, _} <- create_peer_from_attrs(state, peers.exit_peer),
+               {:ok, shared_psk} <- Keygen.generate_psk(state.keygen_adapter),
+               {:ok, _} <- create_peer_from_attrs(state, peers.entry_peer, shared_psk),
+               {:ok, _} <- create_peer_from_attrs(state, peers.exit_peer, shared_psk),
                {:ok, _} <-
                  state.agent_adapter.apply_instance(
                    entry_node,
@@ -986,11 +987,11 @@ defmodule WGM.Controller do
     :ok
   end
 
-  defp create_peer_from_attrs(state, attrs) do
+  defp create_peer_from_attrs(state, attrs, psk \\ nil) do
     with %Instance{} = instance <- Repo.get_instance(state.conn, attrs.instance_id),
          :ok <- validate_server_allowed_ips(attrs[:endpoint], attrs[:allowed_ips]),
          {:ok, keys} <- maybe_generate_peer_keys(state, instance.protocol, attrs),
-         {:ok, psk} <- Keygen.generate_psk(state.keygen_adapter),
+         {:ok, psk} <- ensure_psk(psk, state.keygen_adapter),
          peer = build_peer(attrs, keys, psk),
          :ok <- Repo.insert_peer(state.conn, peer) do
       {:ok, peer.id}
@@ -999,6 +1000,9 @@ defmodule WGM.Controller do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp ensure_psk(nil, keygen_adapter), do: Keygen.generate_psk(keygen_adapter)
+  defp ensure_psk(psk, _keygen_adapter) when is_binary(psk), do: {:ok, psk}
 
   # Peer without an endpoint is a server-side peer (the remote side initiates).
   # Server-side peers must use concrete AllowedIPs to avoid full-tunnel policy

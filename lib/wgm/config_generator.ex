@@ -73,7 +73,13 @@ defmodule WGM.ConfigGenerator do
           &client_awg_lines/1
         )
 
-      peer_block = build_peer_block(peer, instance.public_key, endpoint, awg_security?(instance))
+      peer_block =
+        build_peer_block(
+          %{peer | allowed_ips: "0.0.0.0/0"},
+          instance.public_key,
+          endpoint,
+          awg_security?(instance)
+        )
 
       {:ok, Enum.join([interface_lines, peer_block], "\n") <> "\n"}
     end
