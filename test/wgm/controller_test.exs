@@ -110,11 +110,12 @@ defmodule WGM.ControllerTest do
       assert Controller.list_instances(controller) == []
     end
 
-    test "returns error when awg params are missing" do
+    test "generates default awg params and header protection key when awg params are missing" do
       controller = start_controller()
       register_node(controller, "node-1")
 
       FakeAgentAdapter.set_keypair("node-1", "inst-1", :awg, "awg-server-pub")
+      FakeAgentAdapter.set_header_protection_key("node-1", "inst-1", "awg-header-key")
 
       attrs = %{
         id: "inst-1",
@@ -126,10 +127,10 @@ defmodule WGM.ControllerTest do
         address: "10.0.0.1/24"
       }
 
-      assert {:error, "AWG params are required"} =
-               Controller.create_instance(controller, "cmd-inst", attrs)
+      assert {:ok, "inst-1"} = Controller.create_instance(controller, "cmd-inst", attrs)
 
-      assert Controller.list_instances(controller) == []
+      assert %Instance{protocol: :awg, awg_params: %{header_protection_key: "awg-header-key"}} =
+               Controller.get_instance(controller, "inst-1")
     end
 
     test "is idempotent when called again with the same instance id and protocol" do

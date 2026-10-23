@@ -29,7 +29,8 @@ if Mix.env() != :prod do
       :ok
     end
 
-    @spec set_end_to_end_result([String.t()], {:ok, String.t()} | {:error, String.t()}) :: :ok
+    @spec set_end_to_end_result(map() | [String.t()], {:ok, String.t()} | {:error, String.t()}) ::
+            :ok
     def set_end_to_end_result(route, result) do
       :ets.insert(__MODULE__, {{:end_to_end, route}, result})
       :ok

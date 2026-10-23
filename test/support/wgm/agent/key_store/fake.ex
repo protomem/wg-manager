@@ -30,6 +30,12 @@ defmodule WGM.Agent.KeyStore.Fake do
     :ok
   end
 
+  @spec set_header_protection_key(String.t(), String.t()) :: :ok
+  def set_header_protection_key(instance_id, key) do
+    :ets.insert(__MODULE__, {{:header_key, instance_id}, key})
+    :ok
+  end
+
   @impl true
   def server_private_key_path(protocol, instance_id) do
     "/fake/#{protocol}/#{instance_id}/private_key"
@@ -46,5 +52,23 @@ defmodule WGM.Agent.KeyStore.Fake do
   @impl true
   def write_private_key(protocol, instance_id, key) do
     set_private_key(protocol, instance_id, key)
+  end
+
+  @impl true
+  def header_protection_key_path(instance_id) do
+    "/fake/awg/#{instance_id}/header_protection_key"
+  end
+
+  @impl true
+  def read_header_protection_key(instance_id) do
+    case :ets.lookup(__MODULE__, {:header_key, instance_id}) do
+      [{_, key}] -> {:ok, key}
+      [] -> {:error, :enoent}
+    end
+  end
+
+  @impl true
+  def write_header_protection_key(instance_id, key) do
+    set_header_protection_key(instance_id, key)
   end
 end

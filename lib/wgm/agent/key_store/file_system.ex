@@ -48,6 +48,37 @@ defmodule WGM.Agent.KeyStore.FileSystem do
     end
   end
 
+  @impl true
+  def header_protection_key_path(instance_id) do
+    Path.join([base_dir("awg"), "wgm", instance_id, "header_protection_key"])
+  end
+
+  @impl true
+  def read_header_protection_key(instance_id) do
+    instance_id
+    |> header_protection_key_path()
+    |> File.read()
+    |> case do
+      {:ok, key} -> {:ok, String.trim(key)}
+      error -> error
+    end
+  end
+
+  @impl true
+  def write_header_protection_key(instance_id, key) do
+    path = header_protection_key_path(instance_id)
+    dir = Path.dirname(path)
+
+    with :ok <- ensure_dir(dir),
+         :ok <- File.write(path, key),
+         :ok <- File.chmod(path, 0o600) do
+      :ok
+    else
+      {:error, reason} -> {:error, inspect(reason)}
+      error -> {:error, inspect(error)}
+    end
+  end
+
   defp base_dir(protocol) do
     env = Application.get_env(:wgm, __MODULE__, [])
 

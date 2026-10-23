@@ -7,7 +7,7 @@ defmodule WGM.Peer do
           id: String.t(),
           instance_id: String.t(),
           name: String.t(),
-          private_key: String.t(),
+          private_key: String.t() | nil,
           public_key: String.t(),
           preshared_key: String.t() | nil,
           allowed_ips: String.t(),

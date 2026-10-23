@@ -27,4 +27,23 @@ defmodule WGM.Agent.KeyStore do
   """
   @callback write_private_key(protocol(), instance_id :: String.t(), key :: String.t()) ::
               :ok | {:error, String.t()}
+
+  @doc """
+  Возвращает путь к файлу HeaderProtectionKey для AWG-инстанса.
+  """
+  @callback header_protection_key_path(instance_id :: String.t()) :: String.t()
+
+  @doc """
+  Читает сохранённый HeaderProtectionKey инстанса.
+  """
+  @callback read_header_protection_key(instance_id :: String.t()) ::
+              {:ok, String.t()} | {:error, atom() | String.t()}
+
+  @doc """
+  Сохраняет HeaderProtectionKey AWG-инстанса на узле.
+
+  Файл должен создаваться с правами `0600`.
+  """
+  @callback write_header_protection_key(instance_id :: String.t(), key :: String.t()) ::
+              :ok | {:error, String.t()}
 end

@@ -25,6 +25,11 @@ defmodule WGM.Controller.AgentAdapter.Distribution do
   end
 
   @impl true
+  def generate_header_protection_key(%WGMNode{address: address}, instance_id) do
+    call_agent(address, WGM.Agent, :generate_header_protection_key, [:wgm_agent, instance_id])
+  end
+
+  @impl true
   def apply_instance(%WGMNode{address: address}, instance, peers, opts) do
     call_agent(address, WGM.Agent, :apply_instance, [:wgm_agent, instance, peers, opts])
   end

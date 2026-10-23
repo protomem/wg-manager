@@ -21,7 +21,7 @@ defmodule WGM.Agent.Checker do
     end
   end
 
-  def run_active(node_id, :end_to_end, route, adapter) when is_list(route) do
+  def run_active(node_id, :end_to_end, route, adapter) when is_list(route) or is_map(route) do
     case adapter.end_to_end(route) do
       {:ok, detail} ->
         ok_result(node_id, :end_to_end, detail)

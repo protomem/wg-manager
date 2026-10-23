@@ -21,6 +21,8 @@ defmodule WGM.Instance do
           dns: String.t() | nil,
           mtu: pos_integer() | nil,
           awg_params: AWGParams.t() | nil,
+          post_up: [String.t()] | nil,
+          post_down: [String.t()] | nil,
           target_state: target_state()
         }
 
@@ -37,6 +39,8 @@ defmodule WGM.Instance do
     :dns,
     :mtu,
     :awg_params,
+    :post_up,
+    :post_down,
     :target_state
   ]
 

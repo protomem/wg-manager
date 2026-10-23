@@ -247,6 +247,88 @@ defmodule WGM.Client do
   end
 
   @doc """
+  Создаёт каскад между входным и выходным инстансом.
+  """
+  @spec create_cascade(node(), String.t(), map()) :: {:ok, String.t()} | {:error, String.t()}
+  def create_cascade(controller_node, command_id, attrs) do
+    call_controller_result(controller_node, WGM.Controller, :create_cascade, [
+      @default_controller,
+      command_id,
+      attrs
+    ])
+  end
+
+  @doc """
+  Возвращает список каскадов.
+  """
+  @spec list_cascades(node()) :: {:ok, [WGM.Cascade.t()]} | {:error, String.t()}
+  def list_cascades(controller_node) do
+    call_controller(controller_node, WGM.Controller, :list_cascades, [@default_controller])
+  end
+
+  @doc """
+  Возвращает каскад по идентификатору.
+  """
+  @spec get_cascade(node(), String.t()) :: {:ok, WGM.Cascade.t() | nil} | {:error, String.t()}
+  def get_cascade(controller_node, cascade_id) do
+    call_controller(controller_node, WGM.Controller, :get_cascade, [
+      @default_controller,
+      cascade_id
+    ])
+  end
+
+  @doc """
+  Удаляет каскад.
+
+  Деструктивная операция: требует явного `confirm: true`.
+  """
+  @spec delete_cascade(node(), String.t(), String.t(), keyword()) ::
+          {:ok, String.t()} | {:error, String.t()}
+  def delete_cascade(controller_node, command_id, cascade_id, opts \\ []) do
+    if Keyword.get(opts, :confirm, false) do
+      call_controller_result(controller_node, WGM.Controller, :delete_cascade, [
+        @default_controller,
+        command_id,
+        cascade_id,
+        true
+      ])
+    else
+      {:error, "Destructive action delete_cascade requires confirmation"}
+    end
+  end
+
+  @doc """
+  Переключает протокол инстанса между WG и AWG.
+  """
+  @spec switch_protocol(node(), String.t(), String.t(), atom(), keyword()) ::
+          {:ok, String.t()} | {:error, String.t()}
+  def switch_protocol(controller_node, command_id, instance_id, protocol, opts \\ []) do
+    call_controller_result(controller_node, WGM.Controller, :switch_protocol, [
+      @default_controller,
+      command_id,
+      instance_id,
+      protocol,
+      Keyword.get(opts, :confirm, false)
+    ])
+  end
+
+  @doc """
+  Собирает каскад: создаёт транзитные AWG-инстансы, пиров и поднимает туннели.
+
+  Деструктивная операция: требует явного `confirm: true`.
+  """
+  @spec assemble_cascade(node(), String.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, String.t()}
+  def assemble_cascade(controller_node, command_id, cascade_id, opts \\ []) do
+    call_controller_result(controller_node, WGM.Controller, :assemble_cascade, [
+      @default_controller,
+      command_id,
+      cascade_id,
+      opts
+    ])
+  end
+
+  @doc """
   Возвращает краткую справку по командам клиента.
   """
   @spec help() :: String.t()
@@ -272,6 +354,12 @@ defmodule WGM.Client do
       WGM.Client.show_client_config_qr(ctrl, "peer-id")
       WGM.Client.check_results(ctrl)             # последние результаты проверок
       WGM.Client.run_active_check(ctrl, "node-id", :ping, "1.1.1.1")
+      WGM.Client.create_cascade(ctrl, "cmd-id", %{id: ..., entry_instance_id: ..., exit_instance_id: ...})
+      WGM.Client.list_cascades(ctrl)              # список каскадов
+      WGM.Client.get_cascade(ctrl, "cascade-id")
+      WGM.Client.delete_cascade(ctrl, "cmd-id", "cascade-id", confirm: true)
+      WGM.Client.assemble_cascade(ctrl, "cmd-id", "cascade-id", confirm: true)
+      WGM.Client.switch_protocol(ctrl, "cmd-id", "instance-id", :awg, confirm: true)
       WGM.Client.help()                          # эта справка
 
     Требования: iex должен быть запущен с --name/--sname, --cookie и --hidden,

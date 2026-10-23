@@ -223,6 +223,60 @@ defmodule WGM.ControllerChecksTest do
       assert {:error, "Node not found"} =
                Controller.run_active_check(controller, "missing", :ping)
     end
+
+    test "scheduler runs end_to_end checks for assembled cascades" do
+      controller = start_controller()
+      register_node(controller, "entry-node", :entry)
+      register_instance(controller, "entry-node", "entry-wg")
+      register_instance(controller, "entry-node", "entry-transit", "awg-entry", "10.200.0.1/30")
+      register_node(controller, "exit-node", :exit)
+      register_instance(controller, "exit-node", "exit-awg")
+
+      now = DateTime.utc_now()
+
+      route = %{
+        interface: "awg-entry",
+        source_ip: "10.200.0.1",
+        target: "8.8.8.8"
+      }
+
+      FakeAgentAdapter.set_check_result(
+        "entry-node",
+        :end_to_end,
+        route,
+        {:ok,
+         %Check.Result{
+           node_id: "entry-node",
+           instance_id: nil,
+           peer_id: nil,
+           kind: :end_to_end,
+           status: :ok,
+           detail: "end-to-end ok",
+           checked_at: now,
+           last_success_at: now
+         }}
+      )
+
+      # Store cascade with the transit instance already linked.
+      :ok =
+        WGM.Controller.Repo.insert_cascade(
+          :sys.get_state(controller).conn,
+          %WGM.Cascade{
+            id: "cascade-1",
+            entry_instance_id: "entry-wg",
+            entry_transit_instance_id: "entry-transit",
+            exit_instance_id: "exit-awg",
+            target: "8.8.8.8"
+          }
+        )
+
+      GenServer.call(controller, :run_active_checks)
+
+      results = Controller.check_results(controller, kind: :end_to_end)
+      assert length(results) == 1
+      assert hd(results).status == :ok
+      assert hd(results).detail == "end-to-end ok"
+    end
   end
 
   describe "check_results/2" do
@@ -271,29 +325,35 @@ defmodule WGM.ControllerChecksTest do
     controller
   end
 
-  defp register_node(controller, node_id) do
+  defp register_node(controller, node_id, role \\ :entry) do
     attrs = %{
       id: node_id,
       name: node_id,
       address: "193.233.91.130",
-      role: :entry
+      role: role
     }
 
     assert {:ok, ^node_id} = Controller.register_node(controller, "cmd-#{node_id}", attrs)
     :ok
   end
 
-  defp register_instance(controller, node_id, instance_id) do
+  defp register_instance(
+         controller,
+         node_id,
+         instance_id,
+         name \\ "wg1",
+         address \\ "10.0.0.1/24"
+       ) do
     FakeAgentAdapter.set_keypair(node_id, instance_id, :wg, "server-pub-#{instance_id}")
 
     attrs = %{
       id: instance_id,
       node_id: node_id,
-      name: "wg1",
+      name: name,
       protocol: :wg,
       listen_port: 51820,
       subnet: "10.0.0.0/24",
-      address: "10.0.0.1/24"
+      address: address
     }
 
     assert {:ok, ^instance_id} =

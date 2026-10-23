@@ -63,6 +63,15 @@ defmodule WGM.Agent do
   end
 
   @doc """
+  Генерирует HeaderProtectionKey для AWG-инстанса.
+  """
+  @spec generate_header_protection_key(GenServer.server(), String.t()) ::
+          {:ok, String.t()} | {:error, String.t()}
+  def generate_header_protection_key(agent, instance_id) do
+    GenServer.call(agent, {:generate_header_protection_key, instance_id})
+  end
+
+  @doc """
   Применяет желаемое состояние инстанса на узле (converge).
 
   Опции см. в `WGM.Agent.Converger.converge/4`.
@@ -114,6 +123,21 @@ defmodule WGM.Agent do
     end
   end
 
+  def handle_call(
+        {:generate_header_protection_key, _instance_id},
+        _from,
+        %{read_only: true} = state
+      ) do
+    {:reply, {:error, "read-only mode"}, state}
+  end
+
+  def handle_call({:generate_header_protection_key, instance_id}, _from, state) do
+    case ensure_header_protection_key(state, instance_id) do
+      {:ok, key, new_state} -> {:reply, {:ok, key}, new_state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
   def handle_call({:apply_instance, _instance, _peers, _opts}, _from, %{read_only: true} = state) do
     {:reply, {:error, "read-only mode"}, state}
   end
@@ -145,12 +169,46 @@ defmodule WGM.Agent do
     end
   end
 
+  defp ensure_header_protection_key(state, instance_id) do
+    key_key = {:header_protection, instance_id}
+
+    case Map.fetch(state.server_keys, key_key) do
+      {:ok, key} ->
+        {:ok, key, state}
+
+      :error ->
+        case state.key_store.read_header_protection_key(instance_id) do
+          {:ok, key} ->
+            {:ok, key, %{state | server_keys: Map.put(state.server_keys, key_key, key)}}
+
+          {:error, _} ->
+            generate_and_store_header_protection_key(state, instance_id)
+        end
+    end
+  end
+
   defp generate_and_store_private_key(state, instance_id, protocol) do
     case Keygen.generate_keypair(protocol, state.adapter) do
       {:ok, %{private_key: private_key}} ->
         :ok = state.key_store.write_private_key(protocol, instance_id, private_key)
         new_state = %{state | server_keys: Map.put(state.server_keys, instance_id, private_key)}
         {:ok, private_key, new_state}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp generate_and_store_header_protection_key(state, instance_id) do
+    case Keygen.generate_psk(state.adapter) do
+      {:ok, key} ->
+        :ok = state.key_store.write_header_protection_key(instance_id, key)
+
+        {:ok, key,
+         %{
+           state
+           | server_keys: Map.put(state.server_keys, {:header_protection, instance_id}, key)
+         }}
 
       {:error, reason} ->
         {:error, reason}

@@ -36,6 +36,12 @@ defmodule WGM.Controller.AgentAdapter.Fake do
     :ok
   end
 
+  @spec set_header_protection_key(String.t(), String.t(), String.t()) :: :ok
+  def set_header_protection_key(node_id, instance_id, key) do
+    :ets.insert(__MODULE__, {{:header_key, node_id, instance_id}, key})
+    :ok
+  end
+
   @spec set_apply_result(String.t(), String.t(), {:ok, map()} | {:error, String.t()}) :: :ok
   def set_apply_result(node_id, instance_id, result) do
     :ets.insert(__MODULE__, {{:apply, node_id, instance_id}, result})
@@ -78,6 +84,14 @@ defmodule WGM.Controller.AgentAdapter.Fake do
     case :ets.lookup(__MODULE__, {:keypair, node_id, instance_id, protocol}) do
       [{_, public_key}] -> {:ok, public_key}
       [] -> {:error, "No keypair fixture for #{node_id}/#{instance_id}/#{protocol}"}
+    end
+  end
+
+  @impl true
+  def generate_header_protection_key(%Node{id: node_id}, instance_id) do
+    case :ets.lookup(__MODULE__, {:header_key, node_id, instance_id}) do
+      [{_, key}] -> {:ok, key}
+      [] -> {:error, "No header protection key fixture for #{node_id}/#{instance_id}"}
     end
   end
 

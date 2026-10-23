@@ -77,5 +77,34 @@ defmodule WGM.HealthCheckTest do
       assert result.status == :ok
       assert result.detail == "reachable"
     end
+
+    test "returns end_to_end result for map route" do
+      route = %{interface: "awg-entry", source_ip: "10.200.0.1", target: "1.1.1.1"}
+
+      HealthCheck.FakeAdapter.set_end_to_end_result(
+        route,
+        {:ok, "end-to-end through awg-entry to 1.1.1.1 ok"}
+      )
+
+      result = Checker.run_active("node-1", :end_to_end, route, HealthCheck.FakeAdapter)
+
+      assert result.kind == :end_to_end
+      assert result.status == :ok
+      assert result.detail == "end-to-end through awg-entry to 1.1.1.1 ok"
+    end
+
+    test "distinguishes error states for map route" do
+      route_down = %{interface: "awg-entry", source_ip: "10.200.0.1", target: "1.1.1.1"}
+
+      HealthCheck.FakeAdapter.set_end_to_end_result(
+        route_down,
+        {:error, "interface awg-entry is not up"}
+      )
+
+      result = Checker.run_active("node-1", :end_to_end, route_down, HealthCheck.FakeAdapter)
+
+      assert result.status == :error
+      assert result.detail == "interface awg-entry is not up"
+    end
   end
 end

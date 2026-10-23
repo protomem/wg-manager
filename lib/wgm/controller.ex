@@ -10,8 +10,9 @@ defmodule WGM.Controller do
 
   use GenServer
 
-  alias WGM.{ConfigGenerator, Instance, Keygen, Node, Peer}
+  alias WGM.{Cascade, ConfigGenerator, Instance, Keygen, Node, Peer}
   alias WGM.AWGParamsValidator
+  alias WGM.Cascade.Builder
   alias WGM.Controller.{AgentAdapter, Repo, Status}
 
   defstruct [
@@ -63,6 +64,39 @@ defmodule WGM.Controller do
   @spec delete_node(GenServer.server(), command_id(), String.t()) :: command_result()
   def delete_node(controller, command_id, node_id) do
     GenServer.call(controller, {:delete_node, command_id, node_id})
+  end
+
+  @spec list_cascades(GenServer.server()) :: [Cascade.t()]
+  def list_cascades(controller) do
+    GenServer.call(controller, :list_cascades)
+  end
+
+  @spec get_cascade(GenServer.server(), String.t()) :: Cascade.t() | nil
+  def get_cascade(controller, id) do
+    GenServer.call(controller, {:get_cascade, id})
+  end
+
+  @spec create_cascade(GenServer.server(), command_id(), map()) :: command_result()
+  def create_cascade(controller, command_id, attrs) do
+    GenServer.call(controller, {:create_cascade, command_id, attrs})
+  end
+
+  @spec delete_cascade(GenServer.server(), command_id(), String.t(), boolean()) ::
+          {:ok, String.t()} | {:error, String.t()}
+  def delete_cascade(controller, command_id, cascade_id, confirm) do
+    GenServer.call(controller, {:delete_cascade, command_id, cascade_id, confirm})
+  end
+
+  @spec assemble_cascade(GenServer.server(), command_id(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, String.t()}
+  def assemble_cascade(controller, command_id, cascade_id, opts \\ []) do
+    GenServer.call(controller, {:assemble_cascade, command_id, cascade_id, opts})
+  end
+
+  @spec switch_protocol(GenServer.server(), command_id(), String.t(), atom(), boolean()) ::
+          {:ok, String.t()} | {:error, String.t()}
+  def switch_protocol(controller, command_id, instance_id, protocol, confirm) do
+    GenServer.call(controller, {:switch_protocol, command_id, instance_id, protocol, confirm})
   end
 
   @spec list_instances(GenServer.server(), String.t() | nil) :: [Instance.t()]
@@ -248,6 +282,166 @@ defmodule WGM.Controller do
     {:reply, result, state}
   end
 
+  def handle_call(:list_cascades, _from, state) do
+    {:reply, Repo.list_cascades(state.conn), state}
+  end
+
+  def handle_call({:get_cascade, id}, _from, state) do
+    {:reply, Repo.get_cascade(state.conn, id), state}
+  end
+
+  def handle_call({:create_cascade, command_id, attrs}, _from, state) do
+    summary =
+      "created cascade #{attrs[:id]} entry #{attrs[:entry_instance_id]} exit #{attrs[:exit_instance_id]}"
+
+    result =
+      execute_command(state, command_id, "create_cascade", attrs[:id], summary, fn ->
+        with {:ok, cascade} <- build_cascade(state.conn, attrs),
+             :ok <- Repo.insert_cascade(state.conn, cascade) do
+          {:ok, cascade.id}
+        else
+          {:error, reason} -> {:error, reason}
+        end
+      end)
+
+    {:reply, result, state}
+  end
+
+  def handle_call({:delete_cascade, command_id, cascade_id, confirm}, _from, state) do
+    summary = "deleted cascade #{cascade_id}"
+
+    result =
+      execute_command(state, command_id, "delete_cascade", cascade_id, summary, fn ->
+        if confirm do
+          case Repo.get_cascade(state.conn, cascade_id) do
+            nil ->
+              {:error, "Cascade not found"}
+
+            %Cascade{} ->
+              with :ok <- Repo.delete_cascade(state.conn, cascade_id), do: {:ok, cascade_id}
+          end
+        else
+          {:error, "Destructive action delete_cascade requires confirmation"}
+        end
+      end)
+
+    {:reply, result, state}
+  end
+
+  def handle_call({:assemble_cascade, command_id, cascade_id, opts}, _from, state) do
+    confirm = Keyword.get(opts, :confirm, false)
+    summary = "assembled cascade #{cascade_id}"
+
+    result =
+      execute_command(state, command_id, "assemble_cascade", cascade_id, summary, fn ->
+        if confirm do
+          with %Cascade{} = cascade <- Repo.get_cascade(state.conn, cascade_id),
+               %Instance{} = entry_instance <-
+                 Repo.get_instance(state.conn, cascade.entry_instance_id),
+               %Instance{} = exit_instance <-
+                 Repo.get_instance(state.conn, cascade.exit_instance_id),
+               %Node{} = entry_node <- Repo.get_node(state.conn, entry_instance.node_id),
+               %Node{} = exit_node <- Repo.get_node(state.conn, exit_instance.node_id),
+               plan = Builder.plan_instances(entry_node, exit_node, opts),
+               {:ok, entry_transit_id} <- create_instance_from_plan(state, plan.entry_transit),
+               {:ok, exit_id} <- create_instance_from_plan(state, plan.exit),
+               %Instance{} = entry_transit <- Repo.get_instance(state.conn, entry_transit_id),
+               %Instance{} = exit_inst <- Repo.get_instance(state.conn, exit_id),
+               peers = Builder.peer_attrs(entry_transit, exit_inst, exit_node),
+               {:ok, _} <- create_peer_from_attrs(state, peers.entry_peer),
+               {:ok, _} <- create_peer_from_attrs(state, peers.exit_peer),
+               {:ok, _} <-
+                 state.agent_adapter.apply_instance(
+                   entry_node,
+                   entry_transit,
+                   Repo.list_peers(state.conn, entry_transit_id),
+                   action: :up,
+                   confirm: true
+                 ),
+               {:ok, _} <-
+                 state.agent_adapter.apply_instance(
+                   exit_node,
+                   exit_inst,
+                   Repo.list_peers(state.conn, exit_id),
+                   action: :up,
+                   confirm: true
+                 ),
+               :ok <-
+                 Repo.update_cascade(
+                   state.conn,
+                   %{
+                     cascade
+                     | entry_transit_instance_id: entry_transit_id,
+                       exit_instance_id: exit_id
+                   }
+                 ) do
+            {:ok,
+             %{
+               cascade_id: cascade_id,
+               entry_transit_instance_id: entry_transit_id,
+               exit_instance_id: exit_id
+             }}
+          else
+            nil -> {:error, "Cascade not found"}
+            %Instance{} -> {:error, "Instance not found"}
+            %Node{} -> {:error, "Node not found"}
+            {:error, reason} -> {:error, reason}
+          end
+        else
+          {:error, "Destructive action assemble_cascade requires confirmation"}
+        end
+      end)
+
+    {:reply, result, state}
+  end
+
+  def handle_call(
+        {:switch_protocol, command_id, instance_id, new_protocol, confirm},
+        _from,
+        state
+      ) do
+    summary = "switched protocol for instance #{instance_id} to #{new_protocol}"
+
+    result =
+      execute_command(state, command_id, "switch_protocol", instance_id, summary, fn ->
+        if confirm do
+          with %Instance{} = instance <- Repo.get_instance(state.conn, instance_id),
+               %Node{} = node <- Repo.get_node(state.conn, instance.node_id),
+               true <- instance.protocol != new_protocol,
+               {:ok, public_key} <-
+                 state.agent_adapter.generate_keypair(node, instance_id, new_protocol),
+               {:ok, awg_params} <- build_awg_params(state, node, instance_id, new_protocol, nil),
+               updated = %{
+                 instance
+                 | protocol: new_protocol,
+                   public_key: public_key,
+                   awg_params: awg_params
+               },
+               :ok <- Repo.update_instance(state.conn, updated),
+               :ok <- regenerate_client_configs(state, updated),
+               {:ok, _} <-
+                 state.agent_adapter.apply_instance(
+                   node,
+                   updated,
+                   Repo.list_peers(state.conn, instance_id),
+                   action: :up,
+                   confirm: true
+                 ) do
+            {:ok, instance_id}
+          else
+            nil -> {:error, "Instance not found"}
+            false -> {:error, "Protocol is already #{new_protocol}"}
+            %Node{} -> {:error, "Node not found"}
+            {:error, reason} -> {:error, reason}
+          end
+        else
+          {:error, "Destructive action switch_protocol requires confirmation"}
+        end
+      end)
+
+    {:reply, result, state}
+  end
+
   def handle_call({:list_instances, node_id}, _from, state) do
     instances =
       if node_id do
@@ -360,7 +554,7 @@ defmodule WGM.Controller do
     result =
       execute_command(state, command_id, "create_peer", attrs[:id], summary, fn ->
         with %Instance{} = instance <- Repo.get_instance(state.conn, instance_id),
-             {:ok, keys} <- Keygen.generate_keypair(instance.protocol, state.keygen_adapter),
+             {:ok, keys} <- maybe_generate_peer_keys(state, instance.protocol, attrs),
              {:ok, psk} <- Keygen.generate_psk(state.keygen_adapter),
              peer = build_peer(attrs, keys, psk),
              :ok <- Repo.insert_peer(state.conn, peer) do
@@ -581,6 +775,45 @@ defmodule WGM.Controller do
     end
   end
 
+  defp build_cascade(conn, attrs) do
+    entry_instance_id = attrs[:entry_instance_id]
+    exit_instance_id = attrs[:exit_instance_id]
+
+    entry_instance = Repo.get_instance(conn, entry_instance_id)
+    exit_instance = Repo.get_instance(conn, exit_instance_id)
+
+    with :ok <- validate_instance_exists(entry_instance, "Entry instance not found"),
+         :ok <- validate_instance_exists(exit_instance, "Exit instance not found"),
+         entry_node <- Repo.get_node(conn, entry_instance.node_id),
+         exit_node <- Repo.get_node(conn, exit_instance.node_id),
+         :ok <- validate_different_nodes(entry_node, exit_node),
+         :ok <- validate_node_role(entry_node, :entry, "Entry node role must be :entry"),
+         :ok <- validate_node_role(exit_node, :exit, "Exit node role must be :exit") do
+      {:ok,
+       %Cascade{
+         id: attrs[:id],
+         entry_instance_id: entry_instance_id,
+         exit_instance_id: exit_instance_id,
+         entry_transit_instance_id: nil,
+         name: attrs[:name],
+         target: attrs[:target] || "1.1.1.1"
+       }}
+    end
+  end
+
+  defp validate_different_nodes(%Node{id: same_id}, %Node{id: same_id}),
+    do: {:error, "Entry and exit instances must be on different nodes"}
+
+  defp validate_different_nodes(_, _), do: :ok
+
+  defp validate_instance_exists(%Instance{}, _), do: :ok
+  defp validate_instance_exists(nil, message), do: {:error, message}
+
+  defp validate_node_role(nil, _, message), do: {:error, message}
+
+  defp validate_node_role(%Node{role: role}, expected, _) when role == expected, do: :ok
+  defp validate_node_role(%Node{}, _, message), do: {:error, message}
+
   defp validate_converge_preconditions(:absent, [_ | _]), do: {:error, "Instance has peers"}
   defp validate_converge_preconditions(_action, _peers), do: :ok
 
@@ -627,7 +860,8 @@ defmodule WGM.Controller do
     protocol = attrs[:protocol]
     instance_id = attrs[:id]
 
-    with {:ok, awg_params} <- build_awg_params(protocol, attrs[:awg_params]),
+    with {:ok, awg_params} <-
+           build_awg_params(state, node, instance_id, protocol, attrs[:awg_params]),
          {:ok, public_key} <- state.agent_adapter.generate_keypair(node, instance_id, protocol) do
       instance = %Instance{
         id: instance_id,
@@ -642,6 +876,8 @@ defmodule WGM.Controller do
         dns: attrs[:dns],
         mtu: attrs[:mtu],
         awg_params: awg_params,
+        post_up: attrs[:post_up],
+        post_down: attrs[:post_down],
         target_state: :configured
       }
 
@@ -649,9 +885,38 @@ defmodule WGM.Controller do
     end
   end
 
-  defp build_awg_params(:awg, nil), do: {:error, "AWG params are required"}
+  defp build_awg_params(_state, _node, _instance_id, :wg, _), do: {:ok, nil}
 
-  defp build_awg_params(:awg, params) do
+  defp build_awg_params(state, node, instance_id, :awg, nil) do
+    with {:ok, key} <- state.agent_adapter.generate_header_protection_key(node, instance_id) do
+      params = %Instance.AWGParams{
+        jc: 4,
+        jmin: 50,
+        jmax: 100,
+        s1: 100,
+        s2: 200,
+        s3: 300,
+        s4: 400,
+        h1: "5-10",
+        h2: "20-30",
+        h3: "40-50",
+        h4: "60-70",
+        i1: 1,
+        i2: 2,
+        i3: 3,
+        i4: 4,
+        i5: 5,
+        header_protection_key: key
+      }
+
+      case AWGParamsValidator.validate(params) do
+        :ok -> {:ok, params}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  defp build_awg_params(_state, _node, _instance_id, :awg, params) do
     params = struct(Instance.AWGParams, params)
 
     case AWGParamsValidator.validate(params) do
@@ -659,8 +924,6 @@ defmodule WGM.Controller do
       {:error, reason} -> {:error, reason}
     end
   end
-
-  defp build_awg_params(:wg, _), do: {:ok, nil}
 
   defp validate_existing_instance(state, node, existing, attrs) do
     protocol = attrs[:protocol]
@@ -685,6 +948,57 @@ defmodule WGM.Controller do
 
   defp maybe_insert_instance(_conn, _instance, :existing), do: :ok
   defp maybe_insert_instance(conn, instance, :new), do: Repo.insert_instance(conn, instance)
+
+  defp maybe_generate_peer_keys(state, protocol, attrs) do
+    if attrs[:public_key] do
+      private_key = attrs[:private_key] || nil
+      {:ok, %{private_key: private_key, public_key: attrs[:public_key]}}
+    else
+      Keygen.generate_keypair(protocol, state.keygen_adapter)
+    end
+  end
+
+  defp create_instance_from_plan(state, attrs) do
+    with %Node{} = node <- Repo.get_node(state.conn, attrs.node_id),
+         {:ok, instance, :new} <- build_new_instance(state, node, attrs),
+         :ok <- Repo.insert_instance(state.conn, instance) do
+      {:ok, instance.id}
+    else
+      nil -> {:error, "Node not found"}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp regenerate_client_configs(state, instance) do
+    peers = Repo.list_peers(state.conn, instance.id)
+
+    Enum.each(peers, fn peer ->
+      # Remove stale config; regenerate only if endpoint is known.
+      Repo.delete_client_config(state.conn, peer.id)
+
+      if peer.endpoint do
+        with {:ok, config} <-
+               ConfigGenerator.generate_client_config(instance, peer, peer.endpoint) do
+          Repo.upsert_client_config(state.conn, peer.id, config)
+        end
+      end
+    end)
+
+    :ok
+  end
+
+  defp create_peer_from_attrs(state, attrs) do
+    with %Instance{} = instance <- Repo.get_instance(state.conn, attrs.instance_id),
+         {:ok, keys} <- maybe_generate_peer_keys(state, instance.protocol, attrs),
+         {:ok, psk} <- Keygen.generate_psk(state.keygen_adapter),
+         peer = build_peer(attrs, keys, psk),
+         :ok <- Repo.insert_peer(state.conn, peer) do
+      {:ok, peer.id}
+    else
+      nil -> {:error, "Instance not found"}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp build_peer(attrs, keys, psk) do
     %Peer{
@@ -777,14 +1091,18 @@ defmodule WGM.Controller do
       run_active_check_on_node(state, node.id, :ping, nil)
     end)
 
-    Enum.each(state.cascades, fn cascade ->
-      route = [cascade.entry_instance_id, cascade.exit_instance_id]
-
-      case Repo.get_instance(state.conn, cascade.entry_instance_id) do
+    Enum.each(Repo.list_cascades(state.conn), fn cascade ->
+      case Repo.get_instance(state.conn, cascade.entry_transit_instance_id) do
         nil ->
           :ok
 
         instance ->
+          route = %{
+            interface: instance.name,
+            source_ip: source_ip(instance.address),
+            target: cascade.target || "1.1.1.1"
+          }
+
           run_active_check_on_node(state, instance.node_id, :end_to_end, route)
       end
     end)
@@ -800,6 +1118,12 @@ defmodule WGM.Controller do
       nil -> {:error, "Node not found"}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp source_ip(address) when is_binary(address) do
+    address
+    |> String.split("/")
+    |> List.first()
   end
 
   defp with_last_success_at(_state, %{status: :ok} = result) do

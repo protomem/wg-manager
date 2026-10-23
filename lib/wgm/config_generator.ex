@@ -94,6 +94,8 @@ defmodule WGM.ConfigGenerator do
     base = if listen_port, do: base ++ ["ListenPort = #{listen_port}"], else: base
     base = if dns, do: base ++ ["DNS = #{dns}"], else: base
     base = if mtu, do: base ++ ["MTU = #{mtu}"], else: base
+    base = base ++ Enum.map(List.wrap(instance.post_up), &"PostUp = #{&1}")
+    base = base ++ Enum.map(List.wrap(instance.post_down), &"PostDown = #{&1}")
 
     base =
       if instance.protocol == :awg and

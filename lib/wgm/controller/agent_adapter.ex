@@ -19,6 +19,14 @@ defmodule WGM.Controller.AgentAdapter do
               {:ok, String.t()} | {:error, String.t()}
 
   @doc """
+  Просит агента узла сгенерировать HeaderProtectionKey для AWG-инстанса.
+
+  Ключ генерируется на узле и хранится в локальном KeyStore агента.
+  """
+  @callback generate_header_protection_key(Node.t(), instance_id :: String.t()) ::
+              {:ok, String.t()} | {:error, String.t()}
+
+  @doc """
   Просит агента узла применить желаемое состояние инстанса (converge).
   """
   @callback apply_instance(

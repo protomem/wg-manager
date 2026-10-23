@@ -4,7 +4,7 @@ defmodule WGM.Controller.Repo do
   """
 
   alias Exqlite.Sqlite3
-  alias WGM.{Instance, Node, Peer}
+  alias WGM.{Cascade, Instance, Node, Peer}
   alias WGM.Instance.AWGParams
 
   @spec open(String.t()) :: {:ok, Sqlite3.db()} | {:error, Sqlite3.reason()}
@@ -31,7 +31,11 @@ defmodule WGM.Controller.Repo do
     with :ok <- Sqlite3.execute(conn, schema()),
          :ok <- add_instance_state_column(conn),
          :ok <- add_node_last_contact_column(conn),
-         :ok <- create_check_results_table(conn) do
+         :ok <- create_check_results_table(conn),
+         :ok <- create_cascades_table(conn),
+         :ok <- add_instance_post_columns(conn),
+         :ok <- add_cascade_target_column(conn),
+         :ok <- relax_peer_private_key_constraint(conn) do
       :ok
     end
   end
@@ -99,8 +103,8 @@ defmodule WGM.Controller.Repo do
         private_key, public_key, address, dns, mtu,
         jc, jmin, jmax, s1, s2, s3, s4,
         h1, h2, h3, h4, i1, i2, i3, i4, i5,
-        header_protection_key, state, inserted_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        header_protection_key, post_up, post_down, state, inserted_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       """,
       [
         instance.id,
@@ -131,6 +135,8 @@ defmodule WGM.Controller.Repo do
         awg && awg.i4,
         awg && awg.i5,
         awg && awg.header_protection_key,
+        join_commands(instance.post_up),
+        join_commands(instance.post_down),
         to_string(instance.target_state || :configured),
         now,
         now
@@ -162,6 +168,54 @@ defmodule WGM.Controller.Repo do
   @spec delete_instance(Sqlite3.db(), String.t()) :: :ok | {:error, Sqlite3.reason()}
   def delete_instance(conn, id) do
     execute(conn, "DELETE FROM instances WHERE id = ?", [id])
+  end
+
+  @spec update_instance(Sqlite3.db(), Instance.t()) :: :ok | {:error, Sqlite3.reason()}
+  def update_instance(conn, %Instance{} = instance) do
+    awg = instance.awg_params
+
+    execute(
+      conn,
+      """
+      UPDATE instances SET
+        protocol = ?, listen_port = ?, subnet = ?, public_key = ?, address = ?, dns = ?, mtu = ?,
+        jc = ?, jmin = ?, jmax = ?, s1 = ?, s2 = ?, s3 = ?, s4 = ?,
+        h1 = ?, h2 = ?, h3 = ?, h4 = ?, i1 = ?, i2 = ?, i3 = ?, i4 = ?, i5 = ?,
+        header_protection_key = ?, post_up = ?, post_down = ?, state = ?, updated_at = ?
+      WHERE id = ?
+      """,
+      [
+        to_string(instance.protocol),
+        instance.listen_port,
+        instance.subnet,
+        instance.public_key,
+        instance.address,
+        instance.dns,
+        instance.mtu,
+        awg && awg.jc,
+        awg && awg.jmin,
+        awg && awg.jmax,
+        awg && awg.s1,
+        awg && awg.s2,
+        awg && awg.s3,
+        awg && awg.s4,
+        awg && awg.h1,
+        awg && awg.h2,
+        awg && awg.h3,
+        awg && awg.h4,
+        awg && awg.i1,
+        awg && awg.i2,
+        awg && awg.i3,
+        awg && awg.i4,
+        awg && awg.i5,
+        awg && awg.header_protection_key,
+        join_commands(instance.post_up),
+        join_commands(instance.post_down),
+        to_string(instance.target_state || :configured),
+        now(),
+        instance.id
+      ]
+    )
   end
 
   # DB-столбец оставлен `state` для совместимости существующих баз;
@@ -268,6 +322,11 @@ defmodule WGM.Controller.Repo do
       nil -> nil
       [_, config, _, _] -> config
     end)
+  end
+
+  @spec delete_client_config(Sqlite3.db(), String.t()) :: :ok | {:error, Sqlite3.reason()}
+  def delete_client_config(conn, peer_id) do
+    execute(conn, "DELETE FROM client_configs WHERE peer_id = ?", [peer_id])
   end
 
   # Command journal
@@ -496,6 +555,8 @@ defmodule WGM.Controller.Repo do
       i4 INTEGER,
       i5 INTEGER,
       header_protection_key TEXT,
+      post_up TEXT,
+      post_down TEXT,
       state TEXT NOT NULL DEFAULT 'configured',
       inserted_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -505,7 +566,7 @@ defmodule WGM.Controller.Repo do
       id TEXT PRIMARY KEY,
       instance_id TEXT NOT NULL,
       name TEXT NOT NULL,
-      private_key TEXT NOT NULL,
+      private_key TEXT,
       public_key TEXT NOT NULL,
       preshared_key TEXT,
       allowed_ips TEXT NOT NULL,
@@ -558,6 +619,17 @@ defmodule WGM.Controller.Repo do
 
     CREATE INDEX IF NOT EXISTS idx_check_results_lookup
       ON check_results (node_id, instance_id, peer_id, kind, checked_at);
+
+    CREATE TABLE IF NOT EXISTS cascades (
+      id TEXT PRIMARY KEY,
+      entry_instance_id TEXT NOT NULL,
+      entry_transit_instance_id TEXT,
+      exit_instance_id TEXT NOT NULL,
+      name TEXT,
+      target TEXT,
+      inserted_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
     """
   end
 
@@ -616,6 +688,175 @@ defmodule WGM.Controller.Repo do
     end
   end
 
+  defp create_cascades_table(conn) do
+    tables =
+      query(conn, "SELECT name FROM sqlite_master WHERE type = 'table'")
+      |> Enum.map(fn [name] -> name end)
+
+    if "cascades" in tables do
+      :ok
+    else
+      Sqlite3.execute(conn, """
+      CREATE TABLE cascades (
+        id TEXT PRIMARY KEY,
+        entry_instance_id TEXT NOT NULL,
+        entry_transit_instance_id TEXT,
+        exit_instance_id TEXT NOT NULL,
+        name TEXT,
+        target TEXT,
+        inserted_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      """)
+    end
+  end
+
+  defp add_cascade_target_column(conn) do
+    columns =
+      query(conn, "PRAGMA table_info(cascades)")
+      |> Enum.map(fn [_cid, name, _type, _notnull, _dflt, _pk] -> name end)
+
+    unless "target" in columns do
+      execute(conn, "ALTER TABLE cascades ADD COLUMN target TEXT", [])
+    end
+
+    unless "entry_transit_instance_id" in columns do
+      execute(conn, "ALTER TABLE cascades ADD COLUMN entry_transit_instance_id TEXT", [])
+    end
+
+    :ok
+  end
+
+  defp relax_peer_private_key_constraint(conn) do
+    columns =
+      query(conn, "PRAGMA table_info(peers)")
+      |> Enum.map(fn [_cid, name, _type, notnull, _dflt, _pk] -> {name, notnull} end)
+
+    case List.keyfind(columns, "private_key", 0) do
+      {"private_key", 1} ->
+        Sqlite3.execute(conn, """
+        ALTER TABLE peers RENAME TO peers_old;
+
+        CREATE TABLE peers (
+          id TEXT PRIMARY KEY,
+          instance_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          private_key TEXT,
+          public_key TEXT NOT NULL,
+          preshared_key TEXT,
+          allowed_ips TEXT NOT NULL,
+          persistent_keepalive TEXT,
+          endpoint TEXT,
+          address TEXT,
+          dns TEXT,
+          inserted_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        INSERT INTO peers
+        SELECT id, instance_id, name, private_key, public_key, preshared_key,
+               allowed_ips, persistent_keepalive, endpoint, address, dns,
+               inserted_at, updated_at
+        FROM peers_old;
+
+        DROP TABLE peers_old;
+        """)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp add_instance_post_columns(conn) do
+    columns =
+      query(conn, "PRAGMA table_info(instances)")
+      |> Enum.map(fn [_cid, name, _type, _notnull, _dflt, _pk] -> name end)
+
+    migrations = [
+      {"post_up", "ALTER TABLE instances ADD COLUMN post_up TEXT"},
+      {"post_down", "ALTER TABLE instances ADD COLUMN post_down TEXT"}
+    ]
+
+    Enum.each(migrations, fn {name, sql} ->
+      unless name in columns do
+        execute(conn, sql, [])
+      end
+    end)
+
+    :ok
+  end
+
+  # Cascades
+
+  @spec insert_cascade(Sqlite3.db(), Cascade.t()) :: :ok | {:error, Sqlite3.reason()}
+  def insert_cascade(conn, %Cascade{} = cascade) do
+    now = now()
+
+    execute(
+      conn,
+      """
+      INSERT INTO cascades (
+        id, entry_instance_id, entry_transit_instance_id, exit_instance_id,
+        name, target, inserted_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      """,
+      [
+        cascade.id,
+        cascade.entry_instance_id,
+        cascade.entry_transit_instance_id,
+        cascade.exit_instance_id,
+        cascade.name,
+        cascade.target,
+        now,
+        now
+      ]
+    )
+  end
+
+  @spec list_cascades(Sqlite3.db()) :: [Cascade.t()]
+  def list_cascades(conn) do
+    conn
+    |> query(
+      "SELECT id, entry_instance_id, entry_transit_instance_id, exit_instance_id, name, target FROM cascades ORDER BY name"
+    )
+    |> Enum.map(&row_to_cascade/1)
+  end
+
+  @spec get_cascade(Sqlite3.db(), String.t()) :: Cascade.t() | nil
+  def get_cascade(conn, id) do
+    conn
+    |> query_one(
+      "SELECT id, entry_instance_id, entry_transit_instance_id, exit_instance_id, name, target FROM cascades WHERE id = ?",
+      [id]
+    )
+    |> then(&(&1 && row_to_cascade(&1)))
+  end
+
+  @spec delete_cascade(Sqlite3.db(), String.t()) :: :ok | {:error, Sqlite3.reason()}
+  def delete_cascade(conn, id) do
+    execute(conn, "DELETE FROM cascades WHERE id = ?", [id])
+  end
+
+  @spec update_cascade(Sqlite3.db(), Cascade.t()) :: :ok | {:error, Sqlite3.reason()}
+  def update_cascade(conn, %Cascade{} = cascade) do
+    execute(
+      conn,
+      """
+      UPDATE cascades SET
+        entry_transit_instance_id = ?, exit_instance_id = ?, name = ?, target = ?, updated_at = ?
+      WHERE id = ?
+      """,
+      [
+        cascade.entry_transit_instance_id,
+        cascade.exit_instance_id,
+        cascade.name,
+        cascade.target,
+        now(),
+        cascade.id
+      ]
+    )
+  end
+
   # Helpers
 
   defp instance_select do
@@ -625,7 +866,7 @@ defmodule WGM.Controller.Repo do
       private_key, public_key, address, dns, mtu,
       jc, jmin, jmax, s1, s2, s3, s4,
       h1, h2, h3, h4, i1, i2, i3, i4, i5,
-      header_protection_key, state, inserted_at, updated_at
+      header_protection_key, post_up, post_down, state, inserted_at, updated_at
     FROM instances
     """
   end
@@ -679,6 +920,8 @@ defmodule WGM.Controller.Repo do
          i4,
          i5,
          header_protection_key,
+         post_up,
+         post_down,
          state | _
        ]) do
     %Instance{
@@ -713,6 +956,8 @@ defmodule WGM.Controller.Repo do
           i5,
           header_protection_key
         ),
+      post_up: split_commands(post_up),
+      post_down: split_commands(post_down),
       target_state: parse_state(state)
     }
   end
@@ -833,8 +1078,38 @@ defmodule WGM.Controller.Repo do
     }
   end
 
+  defp row_to_cascade([
+         id,
+         entry_instance_id,
+         entry_transit_instance_id,
+         exit_instance_id,
+         name,
+         target
+       ]) do
+    %Cascade{
+      id: id,
+      entry_instance_id: entry_instance_id,
+      entry_transit_instance_id: entry_transit_instance_id,
+      exit_instance_id: exit_instance_id,
+      name: name,
+      target: target
+    }
+  end
+
   defp maybe_iso(nil), do: nil
   defp maybe_iso(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
+
+  defp join_commands(nil), do: nil
+  defp join_commands([]), do: nil
+  defp join_commands(commands) when is_list(commands), do: Enum.join(commands, "\n")
+
+  defp split_commands(nil), do: nil
+
+  defp split_commands(string) when is_binary(string) do
+    string
+    |> String.split("\n")
+    |> Enum.reject(&(&1 == ""))
+  end
 
   defp execute(conn, sql, params) do
     case Sqlite3.prepare(conn, sql) do
