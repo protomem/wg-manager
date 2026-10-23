@@ -28,4 +28,10 @@ defmodule WGM.Controller.AgentAdapter do
               keyword()
             ) ::
               {:ok, map()} | {:error, String.t()}
+
+  @doc """
+  Просит агента узла выполнить активную проверку (`:ping` или `:end_to_end`).
+  """
+  @callback check(Node.t(), atom(), String.t() | [String.t()] | nil) ::
+              {:ok, WGM.Check.Result.t()} | {:error, String.t()}
 end

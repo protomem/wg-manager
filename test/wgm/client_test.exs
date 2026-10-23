@@ -26,6 +26,8 @@ defmodule WGM.ClientTest do
       assert help =~ "get_client_config"
       assert help =~ "write_client_config"
       assert help =~ "show_client_config_qr"
+      assert help =~ "check_results"
+      assert help =~ "run_active_check"
     end
   end
 

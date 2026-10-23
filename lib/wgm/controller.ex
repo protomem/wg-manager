@@ -14,12 +14,21 @@ defmodule WGM.Controller do
   alias WGM.AWGParamsValidator
   alias WGM.Controller.{AgentAdapter, Repo, Status}
 
-  defstruct [:conn, :agent_adapter, :keygen_adapter]
+  defstruct [
+    :conn,
+    :agent_adapter,
+    :keygen_adapter,
+    :passive_interval_ms,
+    :active_interval_ms,
+    :cascades
+  ]
 
   @type command_id :: String.t()
   @type command_result :: {:ok, String.t()} | {:error, String.t()}
 
   @default_db_path "wgm-controller.db"
+  @default_passive_interval_ms 60_000
+  @default_active_interval_ms 300_000
 
   @doc """
   Запускает контроллер.
@@ -152,6 +161,17 @@ defmodule WGM.Controller do
     GenServer.call(controller, :command_log)
   end
 
+  @spec check_results(GenServer.server(), keyword()) :: [WGM.Check.Result.t()]
+  def check_results(controller, opts \\ []) do
+    GenServer.call(controller, {:check_results, opts})
+  end
+
+  @spec run_active_check(GenServer.server(), String.t(), atom(), String.t() | [String.t()] | nil) ::
+          {:ok, WGM.Check.Result.t()} | {:error, String.t()}
+  def run_active_check(controller, node_id, kind, target \\ nil) do
+    GenServer.call(controller, {:run_active_check, node_id, kind, target})
+  end
+
   # GenServer callbacks
 
   @impl true
@@ -163,8 +183,14 @@ defmodule WGM.Controller do
       state = %__MODULE__{
         conn: conn,
         agent_adapter: opts[:agent_adapter] || AgentAdapter.Distribution,
-        keygen_adapter: opts[:keygen_adapter] || WGM.CLI.SystemAdapter
+        keygen_adapter: opts[:keygen_adapter] || WGM.CLI.SystemAdapter,
+        passive_interval_ms: opts[:passive_interval_ms] || @default_passive_interval_ms,
+        active_interval_ms: opts[:active_interval_ms] || @default_active_interval_ms,
+        cascades: opts[:cascades] || []
       }
+
+      schedule_passive_check(state.passive_interval_ms)
+      schedule_active_check(state.active_interval_ms)
 
       {:ok, state}
     else
@@ -414,7 +440,7 @@ defmodule WGM.Controller do
     statuses =
       state.conn
       |> Repo.list_nodes()
-      |> Enum.map(&node_status(&1, state.agent_adapter))
+      |> Enum.map(&node_status(&1, state.conn, state.agent_adapter))
 
     {:reply, statuses, state}
   end
@@ -425,6 +451,39 @@ defmodule WGM.Controller do
 
   def handle_call(:command_log, _from, state) do
     {:reply, Repo.list_commands(state.conn), state}
+  end
+
+  def handle_call({:check_results, opts}, _from, state) do
+    {:reply, Repo.list_latest_check_results(state.conn, opts), state}
+  end
+
+  def handle_call({:run_active_check, node_id, kind, target}, _from, state) do
+    result = run_active_check_on_node(state, node_id, kind, target)
+    {:reply, result, state}
+  end
+
+  def handle_call(:run_passive_checks, _from, state) do
+    run_passive_checks(state)
+    {:reply, :ok, state}
+  end
+
+  def handle_call(:run_active_checks, _from, state) do
+    run_active_checks(state)
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_info(:run_passive_checks, state) do
+    run_passive_checks(state)
+    schedule_passive_check(state.passive_interval_ms)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info(:run_active_checks, state) do
+    run_active_checks(state)
+    schedule_active_check(state.active_interval_ms)
+    {:noreply, state}
   end
 
   # Private helpers
@@ -643,9 +702,11 @@ defmodule WGM.Controller do
     }
   end
 
-  defp node_status(node, adapter) do
+  defp node_status(node, conn, adapter) do
     case adapter.status(node) do
       {:ok, agent_status} ->
+        :ok = Repo.update_node_last_contact(conn, node.id, agent_status.timestamp)
+
         %Status{
           node_id: node.id,
           node_name: node.name,
@@ -659,9 +720,102 @@ defmodule WGM.Controller do
           node_id: node.id,
           node_name: node.name,
           online: false,
-          last_contact: nil,
+          last_contact: Repo.get_node_last_contact(conn, node.id),
           agent_status: nil
         }
     end
+  end
+
+  defp schedule_passive_check(interval_ms) do
+    Process.send_after(self(), :run_passive_checks, interval_ms)
+  end
+
+  defp schedule_active_check(interval_ms) do
+    Process.send_after(self(), :run_active_checks, interval_ms)
+  end
+
+  defp run_passive_checks(state) do
+    nodes = Repo.list_nodes(state.conn)
+
+    Enum.each(nodes, fn node ->
+      case state.agent_adapter.status(node) do
+        {:ok, agent_status} ->
+          :ok = Repo.update_node_last_contact(state.conn, node.id, agent_status.timestamp)
+
+          agent_status
+          |> WGM.Check.from_agent_status()
+          |> Enum.each(fn result ->
+            result = with_last_success_at(state, result)
+            :ok = Repo.insert_check_result(state.conn, result)
+          end)
+
+        {:error, reason} ->
+          result =
+            with_last_success_at(
+              state,
+              %WGM.Check.Result{
+                node_id: node.id,
+                instance_id: nil,
+                peer_id: nil,
+                kind: :reachability,
+                status: :error,
+                detail: "agent unreachable: #{reason}",
+                checked_at: DateTime.utc_now(),
+                last_success_at: nil
+              }
+            )
+
+          :ok = Repo.insert_check_result(state.conn, result)
+      end
+    end)
+  end
+
+  defp run_active_checks(state) do
+    nodes = Repo.list_nodes(state.conn)
+
+    Enum.each(nodes, fn node ->
+      run_active_check_on_node(state, node.id, :ping, nil)
+    end)
+
+    Enum.each(state.cascades, fn cascade ->
+      route = [cascade.entry_instance_id, cascade.exit_instance_id]
+
+      case Repo.get_instance(state.conn, cascade.entry_instance_id) do
+        nil ->
+          :ok
+
+        instance ->
+          run_active_check_on_node(state, instance.node_id, :end_to_end, route)
+      end
+    end)
+  end
+
+  defp run_active_check_on_node(state, node_id, kind, target) do
+    with %Node{} = node <- Repo.get_node(state.conn, node_id),
+         {:ok, result} <- state.agent_adapter.check(node, kind, target) do
+      result = with_last_success_at(state, result)
+      :ok = Repo.insert_check_result(state.conn, result)
+      {:ok, result}
+    else
+      nil -> {:error, "Node not found"}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp with_last_success_at(_state, %{status: :ok} = result) do
+    %{result | last_success_at: result.checked_at}
+  end
+
+  defp with_last_success_at(state, result) do
+    last_success =
+      Repo.latest_successful_check(
+        state.conn,
+        result.node_id,
+        result.instance_id,
+        result.peer_id,
+        result.kind
+      )
+
+    %{result | last_success_at: last_success}
   end
 end

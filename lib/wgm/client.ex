@@ -221,6 +221,32 @@ defmodule WGM.Client do
   end
 
   @doc """
+  Возвращает последние результаты проверок (passive + active).
+  """
+  @spec check_results(node(), keyword()) ::
+          {:ok, [WGM.Check.Result.t()]} | {:error, String.t()}
+  def check_results(controller_node, opts \\ []) do
+    call_controller(controller_node, WGM.Controller, :check_results, [
+      @default_controller,
+      opts
+    ])
+  end
+
+  @doc """
+  Запускает активную проверку с указанным узлом.
+  """
+  @spec run_active_check(node(), String.t(), atom(), String.t() | [String.t()] | nil) ::
+          {:ok, WGM.Check.Result.t()} | {:error, String.t()}
+  def run_active_check(controller_node, node_id, kind, target \\ nil) do
+    call_controller_result(controller_node, WGM.Controller, :run_active_check, [
+      @default_controller,
+      node_id,
+      kind,
+      target
+    ])
+  end
+
+  @doc """
   Возвращает краткую справку по командам клиента.
   """
   @spec help() :: String.t()
@@ -244,7 +270,9 @@ defmodule WGM.Client do
       WGM.Client.get_client_config(ctrl, "peer-id")
       WGM.Client.write_client_config(ctrl, "peer-id", "/path/to/file.conf")
       WGM.Client.show_client_config_qr(ctrl, "peer-id")
-      WGM.Client.help()                         # эта справка
+      WGM.Client.check_results(ctrl)             # последние результаты проверок
+      WGM.Client.run_active_check(ctrl, "node-id", :ping, "1.1.1.1")
+      WGM.Client.help()                          # эта справка
 
     Требования: iex должен быть запущен с --name/--sname, --cookie и --hidden,
     либо distribution включён до вызова connect/2.

@@ -29,7 +29,9 @@ defmodule WGM.Controller.Repo do
   @spec migrate(Sqlite3.db()) :: :ok | {:error, Sqlite3.reason()}
   def migrate(conn) do
     with :ok <- Sqlite3.execute(conn, schema()),
-         :ok <- add_instance_state_column(conn) do
+         :ok <- add_instance_state_column(conn),
+         :ok <- add_node_last_contact_column(conn),
+         :ok <- create_check_results_table(conn) do
       :ok
     end
   end
@@ -334,6 +336,122 @@ defmodule WGM.Controller.Repo do
     |> Enum.map(&row_to_audit/1)
   end
 
+  # Node last contact
+
+  @spec update_node_last_contact(Sqlite3.db(), String.t(), DateTime.t()) ::
+          :ok | {:error, Sqlite3.reason()}
+  def update_node_last_contact(conn, node_id, last_contact) do
+    execute(
+      conn,
+      "UPDATE nodes SET last_contact = ? WHERE id = ?",
+      [DateTime.to_iso8601(last_contact), node_id]
+    )
+  end
+
+  @spec get_node_last_contact(Sqlite3.db(), String.t()) :: DateTime.t() | nil
+  def get_node_last_contact(conn, node_id) do
+    conn
+    |> query_one(
+      "SELECT last_contact FROM nodes WHERE id = ?",
+      [node_id]
+    )
+    |> then(fn
+      nil -> nil
+      [nil] -> nil
+      [value] -> from_iso(value)
+    end)
+  end
+
+  # Check results
+
+  @spec insert_check_result(Sqlite3.db(), WGM.Check.Result.t()) ::
+          :ok | {:error, Sqlite3.reason()}
+  def insert_check_result(conn, %WGM.Check.Result{} = result) do
+    execute(
+      conn,
+      """
+      INSERT INTO check_results (
+        node_id, instance_id, peer_id, kind, status, detail,
+        checked_at, last_success_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      """,
+      [
+        result.node_id,
+        result.instance_id,
+        result.peer_id,
+        to_string(result.kind),
+        to_string(result.status),
+        result.detail,
+        DateTime.to_iso8601(result.checked_at),
+        maybe_iso(result.last_success_at)
+      ]
+    )
+  end
+
+  @spec list_latest_check_results(Sqlite3.db(), keyword()) :: [WGM.Check.Result.t()]
+  def list_latest_check_results(conn, opts \\ []) do
+    node_filter = opts[:node_id]
+    instance_filter = opts[:instance_id]
+
+    base_sql = """
+    SELECT
+      node_id, instance_id, peer_id, kind, status, detail,
+      checked_at, last_success_at
+    FROM check_results cr
+    WHERE checked_at = (
+      SELECT MAX(checked_at)
+      FROM check_results cr2
+      WHERE cr2.node_id = cr.node_id
+        AND COALESCE(cr2.instance_id, '') = COALESCE(cr.instance_id, '')
+        AND COALESCE(cr2.peer_id, '') = COALESCE(cr.peer_id, '')
+        AND cr2.kind = cr.kind
+    )
+    """
+
+    {sql, params} =
+      {base_sql, []}
+      |> maybe_filter(" AND cr.node_id = ?", node_filter)
+      |> maybe_filter(" AND cr.instance_id = ?", instance_filter)
+
+    conn
+    |> query(sql <> " ORDER BY cr.node_id, cr.instance_id, cr.kind, cr.peer_id", params)
+    |> Enum.map(&row_to_check_result/1)
+  end
+
+  defp maybe_filter({sql, params}, _clause, nil), do: {sql, params}
+
+  defp maybe_filter({sql, params}, clause, value) do
+    {sql <> clause, params ++ [value]}
+  end
+
+  @spec latest_successful_check(
+          Sqlite3.db(),
+          String.t(),
+          String.t() | nil,
+          String.t() | nil,
+          atom()
+        ) :: DateTime.t() | nil
+  def latest_successful_check(conn, node_id, instance_id, peer_id, kind) do
+    conn
+    |> query_one(
+      """
+      SELECT MAX(checked_at)
+      FROM check_results
+      WHERE node_id = ?
+        AND COALESCE(instance_id, '') = ?
+        AND COALESCE(peer_id, '') = ?
+        AND kind = ?
+        AND status = 'ok'
+      """,
+      [node_id, instance_id || "", peer_id || "", to_string(kind)]
+    )
+    |> then(fn
+      nil -> nil
+      [nil] -> nil
+      [value] -> from_iso(value)
+    end)
+  end
+
   # Schema
 
   defp schema do
@@ -344,6 +462,7 @@ defmodule WGM.Controller.Repo do
       address TEXT NOT NULL,
       role TEXT NOT NULL,
       description TEXT,
+      last_contact TEXT,
       inserted_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -424,6 +543,21 @@ defmodule WGM.Controller.Repo do
       summary TEXT NOT NULL,
       timestamp TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS check_results (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      node_id TEXT NOT NULL,
+      instance_id TEXT,
+      peer_id TEXT,
+      kind TEXT NOT NULL,
+      status TEXT NOT NULL,
+      detail TEXT,
+      checked_at TEXT NOT NULL,
+      last_success_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_check_results_lookup
+      ON check_results (node_id, instance_id, peer_id, kind, checked_at);
     """
   end
 
@@ -440,6 +574,45 @@ defmodule WGM.Controller.Repo do
         "ALTER TABLE instances ADD COLUMN state TEXT NOT NULL DEFAULT 'configured'",
         []
       )
+    end
+  end
+
+  defp add_node_last_contact_column(conn) do
+    columns =
+      query(conn, "PRAGMA table_info(nodes)")
+      |> Enum.map(fn [_cid, name, _type, _notnull, _dflt, _pk] -> name end)
+
+    if "last_contact" in columns do
+      :ok
+    else
+      execute(conn, "ALTER TABLE nodes ADD COLUMN last_contact TEXT", [])
+    end
+  end
+
+  defp create_check_results_table(conn) do
+    tables =
+      query(conn, "SELECT name FROM sqlite_master WHERE type = 'table'")
+      |> Enum.map(fn [name] -> name end)
+
+    if "check_results" in tables do
+      :ok
+    else
+      Sqlite3.execute(conn, """
+      CREATE TABLE check_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        node_id TEXT NOT NULL,
+        instance_id TEXT,
+        peer_id TEXT,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        detail TEXT,
+        checked_at TEXT NOT NULL,
+        last_success_at TEXT
+      );
+
+      CREATE INDEX idx_check_results_lookup
+        ON check_results (node_id, instance_id, peer_id, kind, checked_at);
+      """)
     end
   end
 
@@ -638,6 +811,31 @@ defmodule WGM.Controller.Repo do
     }
   end
 
+  defp row_to_check_result([
+         node_id,
+         instance_id,
+         peer_id,
+         kind,
+         status,
+         detail,
+         checked_at,
+         last_success_at
+       ]) do
+    %WGM.Check.Result{
+      node_id: node_id,
+      instance_id: instance_id,
+      peer_id: peer_id,
+      kind: parse_kind(kind),
+      status: parse_status(status),
+      detail: detail,
+      checked_at: from_iso(checked_at),
+      last_success_at: from_iso(last_success_at)
+    }
+  end
+
+  defp maybe_iso(nil), do: nil
+  defp maybe_iso(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
+
   defp execute(conn, sql, params) do
     case Sqlite3.prepare(conn, sql) do
       {:ok, stmt} ->
@@ -699,4 +897,11 @@ defmodule WGM.Controller.Repo do
   defp parse_state("up"), do: :up
   defp parse_state("down"), do: :down
   defp parse_state(_), do: :configured
+
+  defp parse_kind(string) when is_binary(string), do: String.to_atom(string)
+
+  defp parse_status("ok"), do: :ok
+  defp parse_status("error"), do: :error
+  defp parse_status("unknown"), do: :unknown
+  defp parse_status(_), do: :unknown
 end

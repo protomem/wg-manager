@@ -42,6 +42,21 @@ defmodule WGM.Controller.AgentAdapter.Fake do
     :ok
   end
 
+  @spec set_check_result(
+          String.t(),
+          atom(),
+          String.t() | [String.t()] | nil,
+          {
+            :ok,
+            WGM.Check.Result.t()
+          }
+          | {:error, String.t()}
+        ) :: :ok
+  def set_check_result(node_id, kind, target, result) do
+    :ets.insert(__MODULE__, {{:check, node_id, kind, target}, result})
+    :ok
+  end
+
   @spec calls() :: [tuple()]
   def calls do
     case :ets.lookup(__MODULE__, :calls) do
@@ -73,6 +88,16 @@ defmodule WGM.Controller.AgentAdapter.Fake do
     case :ets.lookup(__MODULE__, {:apply, node_id, instance_id}) do
       [{_, result}] -> result
       [] -> {:error, "No apply fixture for #{node_id}/#{instance_id}"}
+    end
+  end
+
+  @impl true
+  def check(%Node{id: node_id}, kind, target) do
+    record_call({:check, node_id, kind, target})
+
+    case :ets.lookup(__MODULE__, {:check, node_id, kind, target}) do
+      [{_, result}] -> result
+      [] -> {:error, "No check fixture for #{node_id}/#{kind}"}
     end
   end
 

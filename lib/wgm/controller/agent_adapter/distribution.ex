@@ -29,6 +29,16 @@ defmodule WGM.Controller.AgentAdapter.Distribution do
     call_agent(address, WGM.Agent, :apply_instance, [:wgm_agent, instance, peers, opts])
   end
 
+  @impl true
+  def check(%WGMNode{id: node_id, address: address}, kind, target) do
+    call_agent(
+      address,
+      WGM.Agent.Checker,
+      :run_active,
+      [node_id, kind, target, WGM.HealthCheck.SystemAdapter]
+    )
+  end
+
   defp call_agent(address, module, function, args) do
     node_name = node_name(address)
 
