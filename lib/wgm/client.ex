@@ -86,7 +86,7 @@ defmodule WGM.Client do
   """
   @spec create_peer(node(), String.t(), map()) :: {:ok, String.t()} | {:error, String.t()}
   def create_peer(controller_node, command_id, attrs) do
-    call_controller_unwrapped(controller_node, WGM.Controller, :create_peer, [
+    call_controller_result(controller_node, WGM.Controller, :create_peer, [
       @default_controller,
       command_id,
       attrs
@@ -95,23 +95,33 @@ defmodule WGM.Client do
 
   @doc """
   Удаляет пира с контроллера.
+
+  Деструктивная операция: требует явного `confirm: true`.
   """
-  @spec delete_peer(node(), String.t(), String.t()) :: {:ok, String.t()} | {:error, String.t()}
-  def delete_peer(controller_node, command_id, peer_id) do
-    call_controller_unwrapped(controller_node, WGM.Controller, :delete_peer, [
-      @default_controller,
-      command_id,
-      peer_id
-    ])
+  @spec delete_peer(node(), String.t(), String.t(), keyword()) ::
+          {:ok, String.t()} | {:error, String.t()}
+  def delete_peer(controller_node, command_id, peer_id, opts \\ []) do
+    if Keyword.get(opts, :confirm, false) do
+      call_controller_result(controller_node, WGM.Controller, :delete_peer, [
+        @default_controller,
+        command_id,
+        peer_id
+      ])
+    else
+      {:error, "Destructive action delete_peer requires confirmation"}
+    end
   end
 
   @doc """
   Генерирует и сохраняет клиентский конфиг пира.
+
+  Возвращаемая строка содержит приватный ключ; не выводите её в логи/терминал
+  и не передавайте в `inspect` без необходимости.
   """
   @spec store_client_config(node(), String.t(), String.t(), String.t()) ::
           {:ok, String.t()} | {:error, String.t()}
   def store_client_config(controller_node, command_id, peer_id, endpoint) do
-    call_controller_unwrapped(controller_node, WGM.Controller, :store_client_config, [
+    call_controller_result(controller_node, WGM.Controller, :store_client_config, [
       @default_controller,
       command_id,
       peer_id,
@@ -121,6 +131,9 @@ defmodule WGM.Client do
 
   @doc """
   Возвращает ранее сохранённый клиентский конфиг пира.
+
+  Возвращаемая строка содержит приватный ключ; не выводите её в логи/терминал
+  и не передавайте в `inspect` без необходимости.
   """
   @spec get_client_config(node(), String.t()) :: {:ok, String.t()} | {:error, String.t()}
   def get_client_config(controller_node, peer_id) do
@@ -135,12 +148,34 @@ defmodule WGM.Client do
 
   @doc """
   Записывает сохранённый клиентский конфиг пира в файл.
+
+  Файл создаётся с правами `0o600`, чтобы ограничить доступ к приватному ключу.
   """
   @spec write_client_config(node(), String.t(), String.t()) ::
           :ok | {:error, String.t()}
   def write_client_config(controller_node, peer_id, path) do
-    with {:ok, config} <- get_client_config(controller_node, peer_id) do
-      File.write(path, config)
+    with {:ok, config} <- get_client_config(controller_node, peer_id),
+         :ok <- write_file_private(path, config) do
+      :ok
+    end
+  end
+
+  defp write_file_private(path, content) do
+    dir = Path.dirname(path)
+    tmp_path = Path.join(dir, ".#{Path.basename(path)}.#{System.unique_integer([:positive])}.tmp")
+
+    with :ok <- File.write(tmp_path, content),
+         :ok <- File.chmod(tmp_path, 0o600),
+         :ok <- File.rename(tmp_path, path) do
+      :ok
+    else
+      {:error, reason} when is_atom(reason) ->
+        File.rm(tmp_path)
+        {:error, to_string(:file.format_error(reason))}
+
+      error ->
+        File.rm(tmp_path)
+        error
     end
   end
 
@@ -174,7 +209,7 @@ defmodule WGM.Client do
       WGM.Client.list_peers(ctrl)               # список пиров
       WGM.Client.get_peer(ctrl, "peer-id")      # пир по id
       WGM.Client.create_peer(ctrl, "cmd-id", %{id: ..., instance_id: ..., name: ...})
-      WGM.Client.delete_peer(ctrl, "cmd-id", "peer-id")
+      WGM.Client.delete_peer(ctrl, "cmd-id", "peer-id", confirm: true)
       WGM.Client.store_client_config(ctrl, "cmd-id", "peer-id", "endpoint:port")
       WGM.Client.get_client_config(ctrl, "peer-id")
       WGM.Client.write_client_config(ctrl, "peer-id", "/path/to/file.conf")
@@ -222,7 +257,7 @@ defmodule WGM.Client do
   end
 
   # Для RPC-вызовов, которые сами возвращают {:ok, ...} или {:error, ...}.
-  defp call_controller_unwrapped(node, module, function, args) do
+  defp call_controller_result(node, module, function, args) do
     case call_controller(node, module, function, args) do
       {:ok, {:ok, result}} -> {:ok, result}
       {:ok, {:error, reason}} -> {:error, reason}
