@@ -59,6 +59,71 @@ defmodule WGM.ConfigGeneratorTest do
              """
     end
 
+    test "WG server config peer block contains Endpoint = peer.endpoint" do
+      instance = wg_instance()
+      peer = %{wg_server_peer() | endpoint: "198.51.100.10:51820"}
+
+      assert {:ok, config} =
+               ConfigGenerator.generate_server_config(instance, [peer], instance.private_key)
+
+      assert config == ~s"""
+             [Interface]
+             PrivateKey = server-private-key
+             Address = 10.0.0.1/24
+             ListenPort = 51820
+             DNS = 1.1.1.1
+             MTU = 1420
+
+             [Peer]
+             PublicKey = peer-public-key
+             PresharedKey = peer-preshared-key
+             AllowedIPs = 10.0.0.2/32
+             Endpoint = 198.51.100.10:51820
+             PersistentKeepalive = 25
+             """
+    end
+
+    test "AWG server config peer block contains Endpoint = peer.endpoint" do
+      instance = awg_instance()
+      peer = %{awg_server_peer() | endpoint: "198.51.100.10:51821"}
+
+      assert {:ok, config} =
+               ConfigGenerator.generate_server_config(instance, [peer], instance.private_key)
+
+      assert config == ~s"""
+             [Interface]
+             PrivateKey = server-private-key
+             Address = 10.0.1.1/24
+             ListenPort = 51821
+             S1 = 100
+             S2 = 200
+             S3 = 300
+             S4 = 400
+             H1 = 1-10
+             H2 = 11-20
+             H3 = 21-30
+             H4 = 31-40
+
+             [Peer]
+             PublicKey = peer-public-key
+             PresharedKey = peer-preshared-key
+             AllowedIPs = 10.0.1.2/32
+             Endpoint = 198.51.100.10:51821
+             PersistentKeepalive = 25
+             AdvancedSecurity = on
+             """
+    end
+
+    test "server config peer block omits Endpoint when peer.endpoint is nil" do
+      instance = wg_instance()
+      peer = %{wg_server_peer() | endpoint: nil}
+
+      assert {:ok, config} =
+               ConfigGenerator.generate_server_config(instance, [peer], instance.private_key)
+
+      refute config =~ "Endpoint ="
+    end
+
     test "returns error for invalid AWG params" do
       instance = %{awg_instance() | awg_params: %{awg_params() | jc: -1}}
 

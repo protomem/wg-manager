@@ -46,7 +46,10 @@ defmodule WGM.ConfigGenerator do
         )
 
       peer_blocks =
-        Enum.map(peers, &build_peer_block(&1, &1.public_key, nil, awg_security?(instance)))
+        Enum.map(
+          peers,
+          &build_peer_block(&1, &1.public_key, &1.endpoint, awg_security?(instance))
+        )
 
       {:ok, Enum.join([interface_lines | peer_blocks], "\n") <> "\n"}
     end
