@@ -17,6 +17,15 @@ defmodule WGM.Agent.Converger do
     8. проверка результата через `show dump`;
     9. откат из бэкапа при расхождении.
 
+  Особенности:
+    - `:up` на опущенном (административно `:down`) интерфейсе фактически
+      выполняет перезапуск: `wg-quick down` затем `wg-quick up`. Это рвёт
+      активные сессии, поэтому требует явного `confirm: true`.
+    - Откат стремится вернуть прежний конфиг и, по возможности, прежнее
+      состояние интерфейса. Для прежнего состояния `:down` `wg-quick down`
+      фактически удаляет интерфейс, поэтому результат отката будет `:absent`
+      (это безопасное направление: туннель не остаётся поднятым).
+
   Приватный ключ сервера читается из локального `key_store` агента.
   """
 
@@ -33,6 +42,10 @@ defmodule WGM.Agent.Converger do
     - `:action` — `:up` (по умолчанию), `:down`, `:restart`, `:absent`;
     - `:confirm` — `true`/`false`, требуется для деструктивных действий;
     - `:dry_run` — `true`/`false`, только превью-дифф без изменений.
+
+  Предупреждение: `action: :up` на административно опущенном (`:down`)
+  интерфейсе выполняет перезапуск (`down → up`), который разрывает активные
+  сессии. Такой вызов требует `confirm: true`.
   """
   @spec converge(map(), Instance.t(), [WGM.Peer.t()], keyword()) ::
           {:ok, result()} | {:error, String.t()}
@@ -49,7 +62,7 @@ defmodule WGM.Agent.Converger do
          interface_state = fetch_interface_state(state, instance),
          diff = compute_diff(current_config, desired_config),
          changed? = changed?(action, current_config, diff, interface_state),
-         :ok <- maybe_require_confirmation(action, confirm, dry_run, changed?) do
+         :ok <- maybe_require_confirmation(action, confirm, dry_run, changed?, interface_state) do
       result = %{
         action: action,
         dry_run: dry_run,
@@ -171,16 +184,23 @@ defmodule WGM.Agent.Converger do
     end)
   end
 
-  defp maybe_require_confirmation(:up, _confirm, false, _changed?), do: :ok
-  defp maybe_require_confirmation(_action, true, false, _changed?), do: :ok
-  defp maybe_require_confirmation(_action, _confirm, true, _changed?), do: :ok
+  defp maybe_require_confirmation(_action, _confirm, true, _changed?, _interface_state),
+    do: :ok
 
-  defp maybe_require_confirmation(action, false, false, true)
+  defp maybe_require_confirmation(:up, false, false, true, :down) do
+    {:error, "Action up on a down interface requires confirmation"}
+  end
+
+  defp maybe_require_confirmation(:up, _confirm, false, _changed?, _interface_state), do: :ok
+
+  defp maybe_require_confirmation(_action, true, false, _changed?, _interface_state), do: :ok
+
+  defp maybe_require_confirmation(action, false, false, true, _interface_state)
        when action in [:down, :restart, :absent] do
     {:error, "Destructive action #{action} requires confirmation"}
   end
 
-  defp maybe_require_confirmation(_action, false, false, false), do: :ok
+  defp maybe_require_confirmation(_action, false, false, false, _interface_state), do: :ok
 
   defp do_apply(
          state,
@@ -201,8 +221,8 @@ defmodule WGM.Agent.Converger do
       {:ok, Map.drop(result, [:dry_run])}
     else
       {:error, reason} ->
-        _ = rollback(state, instance, :absent, current_config, interface_state)
-        {:error, "#{reason}"}
+        {:error,
+         rollback_or_reason(state, instance, :absent, current_config, interface_state, reason)}
     end
   end
 
@@ -223,8 +243,15 @@ defmodule WGM.Agent.Converger do
       {:ok, Map.drop(result, [:dry_run])}
     else
       {:error, reason} ->
-        _ = rollback(state, instance, action, current_config, interface_state)
-        {:error, "#{reason}"}
+        {:error,
+         rollback_or_reason(state, instance, action, current_config, interface_state, reason)}
+    end
+  end
+
+  defp rollback_or_reason(state, instance, action, current_config, interface_state, reason) do
+    case rollback(state, instance, action, current_config, interface_state) do
+      :ok -> "#{reason}"
+      {:error, rollback_reason} -> "#{reason}; rollback failed: #{rollback_reason}"
     end
   end
 
@@ -254,37 +281,13 @@ defmodule WGM.Agent.Converger do
     end
   end
 
-  defp apply_to_kernel(_state, _instance, :down, :absent), do: :ok
-  defp apply_to_kernel(_state, _instance, :down, :down), do: :ok
-
-  defp apply_to_kernel(state, instance, :down, _interface_state) do
-    config_path = config_path(state, instance)
-
-    case state.adapter.down(instance.protocol, instance.name, config_path) do
-      :ok -> :ok
-      {:error, reason} -> {:error, "down failed: #{reason}"}
-    end
-  end
-
-  defp apply_to_kernel(_state, _instance, :absent, :absent) do
-    :ok
-  end
-
-  defp apply_to_kernel(state, instance, :absent, _interface_state) do
-    config_path = config_path(state, instance)
-
-    case state.adapter.down(instance.protocol, instance.name, config_path) do
-      :ok -> :ok
-      {:error, reason} -> {:error, "down failed: #{reason}"}
-    end
+  defp apply_to_kernel(state, instance, action, interface_state)
+       when action in [:down, :absent] do
+    down_kernel(state, instance, interface_state)
   end
 
   defp apply_to_kernel(state, instance, :restart, :up) do
-    config_path = config_path(state, instance)
-
-    with :ok <- state.adapter.down(instance.protocol, instance.name, config_path) do
-      apply_to_kernel(state, instance, :up, :absent)
-    end
+    down_then_up(state, instance)
   end
 
   defp apply_to_kernel(state, instance, :restart, interface_state) do
@@ -294,11 +297,7 @@ defmodule WGM.Agent.Converger do
   # A real `wg-quick up` fails with "already exists" when the interface is
   # present but administratively down, so we tear it down first.
   defp apply_to_kernel(state, instance, :up, :down) do
-    config_path = config_path(state, instance)
-
-    with :ok <- state.adapter.down(instance.protocol, instance.name, config_path) do
-      apply_to_kernel(state, instance, :up, :absent)
-    end
+    down_then_up(state, instance)
   end
 
   defp apply_to_kernel(state, instance, :up, :absent) do
@@ -326,6 +325,26 @@ defmodule WGM.Agent.Converger do
       end
     else
       {:error, reason} -> {:error, "strip failed: #{reason}"}
+    end
+  end
+
+  defp down_kernel(_state, _instance, :absent), do: :ok
+
+  defp down_kernel(state, instance, _interface_state) do
+    config_path = config_path(state, instance)
+
+    case state.adapter.down(instance.protocol, instance.name, config_path) do
+      :ok -> :ok
+      {:error, reason} -> {:error, "down failed: #{reason}"}
+    end
+  end
+
+  @doc false
+  def down_then_up(state, instance) do
+    config_path = config_path(state, instance)
+
+    with :ok <- state.adapter.down(instance.protocol, instance.name, config_path) do
+      apply_to_kernel(state, instance, :up, :absent)
     end
   end
 
@@ -417,22 +436,56 @@ defmodule WGM.Agent.Converger do
     end
   end
 
-  defp rollback(_state, _instance, _action, nil, _interface_state), do: :ok
+  defp rollback(state, instance, action, current_config, interface_state) do
+    target_state = rollback_target_state(action, current_config, interface_state)
+    current_interface_state = fetch_interface_state(state, instance)
 
-  defp rollback(state, instance, :absent, current_config, _interface_state) do
-    case state.config_store.write_config(instance.protocol, instance.name, current_config) do
+    # Order depends on the target state:
+    #   - :up needs the old config restored before we can syncconf/up the kernel;
+    #   - :down/:absent need the kernel torn down first (wg-quick down needs the
+    #     file), only then we restore/delete the config.
+    case target_state do
+      :up ->
+        with :ok <- restore_previous_config(state, instance, current_config),
+             :ok <- apply_to_kernel(state, instance, target_state, current_interface_state) do
+          :ok
+        end
+
+      _other ->
+        with :ok <- apply_to_kernel(state, instance, target_state, current_interface_state),
+             :ok <- restore_previous_config(state, instance, current_config) do
+          :ok
+        end
+    end
+  end
+
+  # Rollback target is the actual state before the operation started.
+  # For :absent with a previous config that means restoring the original
+  # interface state (up/down/absent) together with that config.
+  defp rollback_target_state(:absent, nil, _interface_state), do: :absent
+  defp rollback_target_state(:absent, _current_config, interface_state), do: interface_state
+  defp rollback_target_state(_action, nil, _interface_state), do: :absent
+  defp rollback_target_state(_action, _current_config, interface_state), do: interface_state
+
+  defp restore_previous_config(state, instance, nil) do
+    restore_config_absent(state, instance)
+  end
+
+  defp restore_previous_config(state, instance, current_config) do
+    restore_config_present(state, instance, current_config)
+  end
+
+  defp restore_config_absent(state, instance) do
+    case state.config_store.delete_config(instance.protocol, instance.name) do
       :ok -> :ok
       {:error, reason} -> {:error, "Rollback failed: #{reason}"}
     end
   end
 
-  defp rollback(state, instance, _action, current_config, interface_state) do
+  defp restore_config_present(state, instance, current_config) do
     case state.config_store.write_config(instance.protocol, instance.name, current_config) do
-      :ok ->
-        apply_to_kernel(state, instance, :up, interface_state)
-
-      {:error, reason} ->
-        {:error, "Rollback failed: #{reason}"}
+      :ok -> :ok
+      {:error, reason} -> {:error, "Rollback failed: #{reason}"}
     end
   end
 end

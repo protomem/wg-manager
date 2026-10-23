@@ -17,9 +17,10 @@ defmodule WGM.Agent.ConvergerTest do
       instance = build_instance("wg1", :wg)
       FakeKeyStore.set_private_key(:wg, "inst-wg1", "server-private-key")
 
-      # Интерфейс отсутствует (interface_state не задан → error → absent),
-      # но dump уже заранее подготовлен для верификации после up.
-      FakeAdapter.set_dump(:wg, "wg1", dump_for(instance))
+      # Интерфейс отсутствует (interface_state не задан → error → absent).
+      # Dump для верификации после up регистрируется через set_pending_up_dump,
+      # чтобы пережить внутренний down → up converge.
+      FakeAdapter.set_pending_up_dump(:wg, "wg1", dump_for(instance))
 
       state = build_state()
 
@@ -84,6 +85,35 @@ defmodule WGM.Agent.ConvergerTest do
                Converger.converge(build_state(), instance, [], action: :up)
     end
 
+    test "requires confirmation when interface is administratively down" do
+      instance = build_instance("wg1", :wg)
+      FakeKeyStore.set_private_key(:wg, "inst-wg1", "server-private-key")
+      FakeConfigStore.set_config(:wg, "wg1", "old-config\n")
+      FakeAdapter.set_interface_state("wg1", :down)
+
+      assert {:error, "Action up on a down interface requires confirmation"} =
+               Converger.converge(build_state(), instance, [], action: :up)
+    end
+
+    test "downs then ups an administratively down interface when confirmed" do
+      instance = build_instance("wg1", :wg)
+      FakeKeyStore.set_private_key(:wg, "inst-wg1", "server-private-key")
+      FakeConfigStore.set_config(:wg, "wg1", "old-config\n")
+
+      FakeAdapter.set_interface_state("wg1", :down)
+      FakeAdapter.set_pending_up_dump(:wg, "wg1", dump_for(instance))
+
+      state = build_state()
+
+      assert {:ok, %{action: :up, changed: true}} =
+               Converger.converge(state, instance, [], action: :up, confirm: true)
+
+      assert [
+               {:down, :wg, "wg1", "/fake/wg/wg1.conf"},
+               {:up, :wg, "wg1", "/fake/wg/wg1.conf"}
+             ] = FakeAdapter.calls()
+    end
+
     test "rolls back when verification fails" do
       instance = build_instance("wg1", :wg)
       FakeKeyStore.set_private_key(:wg, "inst-wg1", "server-private-key")
@@ -100,6 +130,138 @@ defmodule WGM.Agent.ConvergerTest do
 
       assert FakeConfigStore.last_backup(:wg, "wg1") == "old-config\n"
       assert {:ok, "old-config\n"} = FakeConfigStore.read_config(:wg, "wg1")
+    end
+
+    test "rollback after failed up on down interface leaves interface down and restores config" do
+      instance = build_instance("wg1", :wg)
+      FakeKeyStore.set_private_key(:wg, "inst-wg1", "server-private-key")
+      FakeConfigStore.set_config(:wg, "wg1", "old-config\n")
+      FakeAdapter.set_interface_state("wg1", :down)
+      FakeAdapter.set_up_result(:wg, "wg1", {:error, "injected up failure"})
+
+      state = build_state()
+
+      assert {:error, reason} =
+               Converger.converge(state, instance, [], action: :up, confirm: true)
+
+      assert reason == "up failed: injected up failure"
+      refute reason =~ "rollback failed"
+
+      # Config restored; rollback must not bring the interface back up because
+      # the interface was down before the operation.
+      assert {:ok, "old-config\n"} = FakeConfigStore.read_config(:wg, "wg1")
+      assert FakeAdapter.interface_state("wg1") == {:error, "Interface wg1 not found"}
+
+      assert [
+               {:down, :wg, "wg1", "/fake/wg/wg1.conf"},
+               {:up, :wg, "wg1", "/fake/wg/wg1.conf"}
+             ] = FakeAdapter.calls()
+    end
+
+    test "rollback after up succeeds but verification fails leaves interface down and restores config" do
+      instance = build_instance("wg1", :wg)
+      FakeKeyStore.set_private_key(:wg, "inst-wg1", "server-private-key")
+      FakeConfigStore.set_config(:wg, "wg1", "old-config\n")
+
+      # Interface is administratively down; confirmed :up tears it down and
+      # brings it back up. Verification fails, so rollback must return to the
+      # previous :down state with the old config restored.
+      FakeAdapter.set_interface_state("wg1", :down)
+      FakeAdapter.set_pending_up_dump(:wg, "wg1", "priv\twrong-pub\t51820\toff\n")
+
+      state = build_state()
+
+      assert {:error, "Verification failed: Public key mismatch" <> _} =
+               Converger.converge(state, instance, [], action: :up, confirm: true)
+
+      # Old config restored, interface forced back down to match pre-operation state.
+      assert {:ok, "old-config\n"} = FakeConfigStore.read_config(:wg, "wg1")
+      assert FakeAdapter.interface_state("wg1") == {:error, "Interface wg1 not found"}
+
+      assert [
+               {:down, :wg, "wg1", "/fake/wg/wg1.conf"},
+               {:up, :wg, "wg1", "/fake/wg/wg1.conf"},
+               {:down, :wg, "wg1", "/fake/wg/wg1.conf"}
+             ] = FakeAdapter.calls()
+    end
+
+    test "rollback removes a new instance when the first up fails verification" do
+      instance = build_instance("wg1", :wg)
+      FakeKeyStore.set_private_key(:wg, "inst-wg1", "server-private-key")
+
+      # No existing config, interface absent => first :up creates everything.
+      FakeAdapter.set_interface_state("wg1", :unknown)
+      FakeAdapter.set_pending_up_dump(:wg, "wg1", "priv\twrong-pub\t51820\toff\n")
+
+      state = build_state()
+
+      assert {:error, "Verification failed: Public key mismatch" <> _} =
+               Converger.converge(state, instance, [], action: :up)
+
+      # The freshly written config must be removed and the interface taken down.
+      assert FakeConfigStore.read_config(:wg, "wg1") == {:error, :enoent}
+      assert FakeAdapter.interface_state("wg1") == {:error, "Interface wg1 not found"}
+
+      assert [
+               {:up, :wg, "wg1", "/fake/wg/wg1.conf"},
+               {:down, :wg, "wg1", "/fake/wg/wg1.conf"}
+             ] = FakeAdapter.calls()
+    end
+
+    test "rollback after failed first up downs interface before deleting config" do
+      instance = build_instance("wg1", :wg)
+      FakeKeyStore.set_private_key(:wg, "inst-wg1", "server-private-key")
+
+      # Model the real `wg-quick down` dependency on the config file: down must
+      # happen while the freshly written config still exists.
+      FakeAdapter.set_down_requires_existing_config(:wg, "wg1")
+
+      # No existing config, interface absent => first :up creates everything.
+      FakeAdapter.set_interface_state("wg1", :unknown)
+      FakeAdapter.set_pending_up_dump(:wg, "wg1", "priv\twrong-pub\t51820\toff\n")
+
+      state = build_state()
+
+      assert {:error, "Verification failed: Public key mismatch" <> _} =
+               Converger.converge(state, instance, [], action: :up)
+
+      assert FakeConfigStore.read_config(:wg, "wg1") == {:error, :enoent}
+      assert FakeAdapter.interface_state("wg1") == {:error, "Interface wg1 not found"}
+
+      # With the old rollback order (delete config before down) this call would
+      # have returned {:error, "Config file does not exist"} and the interface
+      # would have stayed up with the unverified config.
+      refute FakeAdapter.interface_state("wg1") == {:ok, :up}
+    end
+
+    test "rollback after failed absent restores previous up state and config" do
+      instance = build_instance("wg1", :wg)
+      FakeConfigStore.set_config(:wg, "wg1", "old-config\n")
+      FakeKeyStore.set_private_key(:wg, "inst-wg1", "server-private-key")
+
+      # Interface is up; down succeeds, but config deletion fails mid-operation.
+      # The previous state was :up with old-config, so rollback must restore it.
+      FakeAdapter.set_interface_state("wg1", :up)
+      FakeAdapter.set_dump(:wg, "wg1", "")
+      FakeAdapter.set_pending_up_dump(:wg, "wg1", dump_for(instance))
+      FakeConfigStore.set_delete_result(:wg, "wg1", {:error, "injected delete failure"})
+
+      state = build_state()
+
+      assert {:error, reason} =
+               Converger.converge(state, instance, [], action: :absent, confirm: true)
+
+      assert reason =~ "Delete config failed: injected delete failure"
+
+      # Old config is restored and the interface is brought back up to match the
+      # pre-operation state.
+      assert {:ok, "old-config\n"} = FakeConfigStore.read_config(:wg, "wg1")
+      assert FakeAdapter.interface_state("wg1") == {:ok, :up}
+
+      assert [
+               {:down, :wg, "wg1", "/fake/wg/wg1.conf"},
+               {:up, :wg, "wg1", "/fake/wg/wg1.conf"}
+             ] = FakeAdapter.calls()
     end
   end
 
@@ -166,7 +328,7 @@ defmodule WGM.Agent.ConvergerTest do
       instance = build_instance("wg1", :wg)
       FakeKeyStore.set_private_key(:wg, "inst-wg1", "server-private-key")
 
-      FakeAdapter.set_dump(:wg, "wg1", dump_for(instance))
+      FakeAdapter.set_pending_up_dump(:wg, "wg1", dump_for(instance))
       FakeAdapter.set_interface_state("wg1", :up)
 
       state = build_state()
@@ -183,7 +345,7 @@ defmodule WGM.Agent.ConvergerTest do
       instance = build_instance("wg1", :wg)
       FakeKeyStore.set_private_key(:wg, "inst-wg1", "server-private-key")
 
-      FakeAdapter.set_dump(:wg, "wg1", dump_for(instance))
+      FakeAdapter.set_pending_up_dump(:wg, "wg1", dump_for(instance))
 
       state = build_state()
 
@@ -241,6 +403,25 @@ defmodule WGM.Agent.ConvergerTest do
       assert FakeAdapter.calls() == []
     end
 
+    test "removes an administratively down interface" do
+      instance = build_instance("wg1", :wg)
+      FakeConfigStore.set_config(:wg, "wg1", "old-config\n")
+
+      # Interface exists but is administratively down (drift). A real
+      # `wg-quick down` still removes it, so :absent must call down first.
+      FakeAdapter.set_interface_state("wg1", :down)
+      FakeAdapter.set_dump(:wg, "wg1", dump_for(instance))
+
+      state = build_state()
+
+      assert {:ok, %{action: :absent, changed: true}} =
+               Converger.converge(state, instance, [], action: :absent, confirm: true)
+
+      assert [{:down, :wg, "wg1", "/fake/wg/wg1.conf"}] = FakeAdapter.calls()
+      assert FakeConfigStore.read_config(:wg, "wg1") == {:error, :enoent}
+      assert FakeAdapter.interface_state("wg1") == {:error, "Interface wg1 not found"}
+    end
+
     test "requires confirmation when there is something to remove" do
       instance = build_instance("wg1", :wg)
       FakeConfigStore.set_config(:wg, "wg1", "old-config\n")
@@ -248,6 +429,38 @@ defmodule WGM.Agent.ConvergerTest do
 
       assert {:error, "Destructive action absent requires confirmation"} =
                Converger.converge(build_state(), instance, [], action: :absent)
+    end
+
+    test "rollback restores up state when backup fails during absent" do
+      instance = build_instance("wg1", :wg)
+      FakeConfigStore.set_config(:wg, "wg1", "old-config\n")
+      FakeKeyStore.set_private_key(:wg, "inst-wg1", "server-private-key")
+
+      # Interface is up and config is intact; backup fails before any change.
+      # The previous state was :up with old-config, so rollback must keep it up.
+      FakeAdapter.set_interface_state("wg1", :up)
+      FakeAdapter.set_dump(:wg, "wg1", dump_for(instance))
+      FakeConfigStore.set_backup_result(:wg, "wg1", {:error, "injected backup failure"})
+
+      state = build_state()
+
+      assert {:error, reason} =
+               Converger.converge(state, instance, [], action: :absent, confirm: true)
+
+      assert reason =~ "Backup failed: injected backup failure"
+      refute reason =~ "rollback failed"
+
+      # Nothing was changed: old config in place, interface still up.
+      assert {:ok, "old-config\n"} = FakeConfigStore.read_config(:wg, "wg1")
+      assert FakeAdapter.interface_state("wg1") == {:ok, :up}
+      assert FakeConfigStore.backups(:wg, "wg1") == []
+
+      # Backup failed after the interface was already torn down, so rollback
+      # brings it back up with the intact old config.
+      assert [
+               {:down, :wg, "wg1", "/fake/wg/wg1.conf"},
+               {:up, :wg, "wg1", "/fake/wg/wg1.conf"}
+             ] = FakeAdapter.calls()
     end
 
     test "refuses to remove instance that has peers" do
@@ -305,6 +518,22 @@ defmodule WGM.Agent.ConvergerTest do
     end
   end
 
+  describe "FakeAdapter.down honesty" do
+    test "returns error when the interface does not exist" do
+      assert {:error, reason} =
+               FakeAdapter.down(:wg, "missing", "/fake/wg/missing.conf")
+
+      assert reason =~ "does not exist"
+    end
+
+    test "succeeds when the interface exists" do
+      FakeAdapter.set_interface_state("wg1", :up)
+
+      assert :ok = FakeAdapter.down(:wg, "wg1", "/fake/wg/wg1.conf")
+      assert FakeAdapter.interface_state("wg1") == {:error, "Interface wg1 not found"}
+    end
+  end
+
   describe "FakeAdapter dump fixture" do
     test "down deletes the dump fixture" do
       instance = build_instance("wg1", :wg)
@@ -319,6 +548,47 @@ defmodule WGM.Agent.ConvergerTest do
 
       assert FakeAdapter.show_dump(:wg, "wg1") ==
                {:error, "No dump fixture for wg wg1"}
+    end
+
+    test "up does not restore the pre-down dump fixture" do
+      instance = build_instance("wg1", :wg)
+      FakeKeyStore.set_private_key(:wg, "inst-wg1", "server-private-key")
+      FakeConfigStore.set_config(:wg, "wg1", "old-config\n")
+
+      old_dump = dump_for(instance)
+      FakeAdapter.set_dump(:wg, "wg1", old_dump)
+      FakeAdapter.set_interface_state("wg1", :up)
+
+      assert {:ok, %{action: :down, changed: true}} =
+               Converger.converge(build_state(), instance, [], action: :down, confirm: true)
+
+      # After a real `wg-quick down` the old dump is gone. A subsequent `up`
+      # rebuilds the interface from the current config and produces a fresh dump;
+      # it must not silently bring back the stale pre-down dump.
+      assert FakeAdapter.show_dump(:wg, "wg1") ==
+               {:error, "No dump fixture for wg wg1"}
+
+      # A fresh post-up dump is provided via set_pending_up_dump so it survives the
+      # internal `down → up` sequence and reflects the newly applied config.
+      new_dump = "priv\t#{instance.public_key}\t#{instance.listen_port}\toff\n"
+      FakeAdapter.set_pending_up_dump(:wg, "wg1", new_dump)
+      FakeAdapter.set_interface_state("wg1", :down)
+
+      assert {:ok, %{action: :up, changed: true}} =
+               Converger.converge(build_state(), instance, [], action: :up, confirm: true)
+
+      assert FakeAdapter.show_dump(:wg, "wg1") == {:ok, new_dump}
+    end
+
+    test "up leaves dump empty unless the caller sets a fresh fixture" do
+      FakeAdapter.set_interface_state("wg1", :up)
+      FakeAdapter.set_dump(:wg, "wg1", dump_for(build_instance("wg1", :wg)))
+
+      assert :ok = FakeAdapter.down(:wg, "wg1", "/fake/wg/wg1.conf")
+      assert FakeAdapter.show_dump(:wg, "wg1") == {:error, "No dump fixture for wg wg1"}
+
+      assert :ok = FakeAdapter.up(:wg, "wg1", "/fake/wg/wg1.conf")
+      assert FakeAdapter.show_dump(:wg, "wg1") == {:error, "No dump fixture for wg wg1"}
     end
   end
 
@@ -352,7 +622,7 @@ defmodule WGM.Agent.ConvergerTest do
 
       # :up on absent interface creates it
       FakeAdapter.set_interface_state("wg1", :unknown)
-      FakeAdapter.set_dump(:wg, "wg1", dump_for(instance))
+      FakeAdapter.set_pending_up_dump(:wg, "wg1", dump_for(instance))
 
       assert {:ok, %{action: :up, changed: true}} =
                Converger.converge(state, instance, [], action: :up)
@@ -385,15 +655,16 @@ defmodule WGM.Agent.ConvergerTest do
 
       assert FakeAdapter.calls() == []
 
-      # :up on a down interface must first remove the existing interface,
+      # :up on a down interface is an implicit restart (tears sessions), so it
+      # requires confirmation. It must first remove the existing interface,
       # because a real `wg-quick up` fails with "already exists" when the
       # interface is present (even if administratively down).
       FakeAdapter.reset()
       FakeAdapter.set_interface_state("wg1", :down)
-      FakeAdapter.set_dump(:wg, "wg1", dump_for(instance))
+      FakeAdapter.set_pending_up_dump(:wg, "wg1", dump_for(instance))
 
       assert {:ok, %{action: :up, changed: true}} =
-               Converger.converge(state, instance, [], action: :up)
+               Converger.converge(state, instance, [], action: :up, confirm: true)
 
       assert [
                {:down, :wg, "wg1", "/fake/wg/wg1.conf"},
@@ -403,7 +674,7 @@ defmodule WGM.Agent.ConvergerTest do
       # :restart downs and ups
       FakeAdapter.reset()
       FakeAdapter.set_interface_state("wg1", :up)
-      FakeAdapter.set_dump(:wg, "wg1", dump_for(instance))
+      FakeAdapter.set_pending_up_dump(:wg, "wg1", dump_for(instance))
 
       assert {:ok, %{action: :restart, changed: true}} =
                Converger.converge(state, instance, [], action: :restart, confirm: true)

@@ -170,27 +170,9 @@ defmodule WGM.Agent do
   end
 
   defp apply_saved_instance(state, instance) do
-    config_path = state.config_store.config_path(instance.protocol, instance.name)
-
     case state.config_store.read_config(instance.protocol, instance.name) do
       {:ok, _config} ->
-        case state.adapter.interface_state(instance.name) do
-          {:ok, :up} ->
-            instance
-
-          _ ->
-            case state.adapter.up(instance.protocol, instance.name, config_path) do
-              :ok ->
-                instance
-
-              {:error, reason} ->
-                Logger.warning(
-                  "Failed to apply saved config for #{instance.name} at boot: #{reason}"
-                )
-
-                instance
-            end
-        end
+        apply_existing_config_at_boot(state, instance)
 
       {:error, :enoent} ->
         instance
@@ -202,6 +184,34 @@ defmodule WGM.Agent do
 
         instance
     end
+  end
+
+  defp apply_existing_config_at_boot(state, instance) do
+    config_path = state.config_store.config_path(instance.protocol, instance.name)
+
+    case state.adapter.interface_state(instance.name) do
+      {:ok, :up} ->
+        instance
+
+      {:ok, _exists} ->
+        # Real `wg-quick up` fails with "already exists" on an existing
+        # interface even if it is administratively down, so tear it down
+        # first (matching the converge path).
+        handle_boot_kernel_result(instance, Converger.down_then_up(state, instance))
+
+      {:error, _} ->
+        handle_boot_kernel_result(
+          instance,
+          state.adapter.up(instance.protocol, instance.name, config_path)
+        )
+    end
+  end
+
+  defp handle_boot_kernel_result(instance, :ok), do: instance
+
+  defp handle_boot_kernel_result(instance, {:error, reason}) do
+    Logger.warning("Failed to apply saved config for #{instance.name} at boot: #{reason}")
+    instance
   end
 
   defp update_instances_after_apply(state, instance, {:ok, result}, :absent) do

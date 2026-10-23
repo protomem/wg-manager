@@ -383,6 +383,41 @@ defmodule WGM.AgentTest do
       assert FakeAdapter.calls() == []
     end
 
+    test "tears down administratively down interface before bringing it up at boot" do
+      node = %Node{id: "node-boot-down", name: "entry", address: "193.233.91.130", role: :entry}
+
+      instance = %Instance{
+        id: "inst-boot-down",
+        node_id: "node-boot-down",
+        name: "wgbootdown",
+        protocol: :wg,
+        listen_port: 51830,
+        subnet: "10.10.0.0/24",
+        private_key: nil,
+        public_key: "pub",
+        address: "10.10.0.1/24",
+        target_state: :up
+      }
+
+      FakeConfigStore.set_config(:wg, "wgbootdown", "[Interface]\nPrivateKey = priv\n")
+      FakeAdapter.set_interface_state("wgbootdown", :down)
+
+      {:ok, _agent} =
+        Agent.start_link(
+          node: node,
+          instances: [instance],
+          adapter: FakeAdapter,
+          key_store: FakeKeyStore,
+          config_store: FakeConfigStore,
+          read_only: false
+        )
+
+      assert [
+               {:down, :wg, "wgbootdown", "/fake/wg/wgbootdown.conf"},
+               {:up, :wg, "wgbootdown", "/fake/wg/wgbootdown.conf"}
+             ] = FakeAdapter.calls()
+    end
+
     test "does not apply configs at boot in read-only mode" do
       node = %Node{id: "node-ro-boot", name: "entry", address: "193.233.91.130", role: :entry}
 
