@@ -40,7 +40,8 @@ defmodule WGM.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:exqlite, "~> 0.29"}
+      {:exqlite, "~> 0.29"},
+      {:eqrcode, "~> 0.2"}
     ]
   end
 end

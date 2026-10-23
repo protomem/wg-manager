@@ -18,6 +18,12 @@ defmodule WGM.ClientTest do
       assert help =~ "status"
       assert help =~ "list_instances"
       assert help =~ "list_peers"
+      assert help =~ "create_peer"
+      assert help =~ "delete_peer"
+      assert help =~ "store_client_config"
+      assert help =~ "get_client_config"
+      assert help =~ "write_client_config"
+      assert help =~ "show_client_config_qr"
     end
   end
 
@@ -75,6 +81,140 @@ defmodule WGM.ClientTest do
       assert {:ok, [%WGM.Node{id: "node-1"}]} = Client.list_nodes(node())
       assert {:ok, [%Instance{id: "inst-1"}]} = Client.list_instances(node())
       assert {:ok, [%Peer{id: "peer-1"}]} = Client.list_peers(node())
+    end
+  end
+
+  describe "peer operations" do
+    test "create_peer/3 creates a peer through the controller" do
+      controller = start_controller()
+      :ok = register_node(controller, "node-1")
+      :ok = register_instance(controller, "node-1", "inst-1")
+
+      attrs = %{
+        id: "peer-1",
+        instance_id: "inst-1",
+        name: "laptop",
+        allowed_ips: "10.0.0.2/32",
+        address: "10.0.0.2/32"
+      }
+
+      assert {:ok, "peer-1"} = Client.create_peer(node(), "cmd-peer", attrs)
+      assert {:ok, %Peer{id: "peer-1", name: "laptop"}} = Client.get_peer(node(), "peer-1")
+    end
+
+    test "create_peer/3 returns error when instance does not exist" do
+      controller = start_controller()
+      :ok = register_node(controller, "node-1")
+
+      attrs = %{
+        id: "peer-1",
+        instance_id: "missing",
+        name: "laptop",
+        allowed_ips: "10.0.0.2/32",
+        address: "10.0.0.2/32"
+      }
+
+      assert {:error, "Instance not found"} = Client.create_peer(node(), "cmd-peer", attrs)
+    end
+
+    test "delete_peer/3 removes a peer through the controller" do
+      controller = start_controller()
+      :ok = register_node(controller, "node-1")
+      :ok = register_instance(controller, "node-1", "inst-1")
+      :ok = register_peer(controller, "inst-1", "peer-1")
+
+      assert {:ok, "peer-1"} = Client.delete_peer(node(), "cmd-del", "peer-1")
+      assert {:ok, nil} = Client.get_peer(node(), "peer-1")
+    end
+
+    test "delete_peer/3 returns error when peer does not exist" do
+      controller = start_controller()
+      :ok = register_node(controller, "node-1")
+      :ok = register_instance(controller, "node-1", "inst-1")
+
+      assert {:error, "Peer not found"} = Client.delete_peer(node(), "cmd-del", "missing")
+    end
+  end
+
+  describe "client config operations" do
+    test "store_client_config/4 generates and stores a client config" do
+      controller = start_controller()
+      :ok = register_node(controller, "node-1")
+      :ok = register_instance(controller, "node-1", "inst-1")
+      :ok = register_peer(controller, "inst-1", "peer-1")
+
+      assert {:ok, config} =
+               Client.store_client_config(node(), "cmd-config", "peer-1", "193.233.91.130:51820")
+
+      assert config =~ "[Interface]"
+      assert config =~ "[Peer]"
+      assert config =~ "Endpoint = 193.233.91.130:51820"
+
+      assert {:ok, ^config} = Client.get_client_config(node(), "peer-1")
+    end
+
+    test "store_client_config/4 returns error when peer does not exist" do
+      controller = start_controller()
+      :ok = register_node(controller, "node-1")
+      :ok = register_instance(controller, "node-1", "inst-1")
+
+      assert {:error, "Peer or instance not found"} =
+               Client.store_client_config(node(), "cmd-config", "missing", "193.233.91.130:51820")
+    end
+
+    test "write_client_config/3 writes the stored config to a file" do
+      controller = start_controller()
+      :ok = register_node(controller, "node-1")
+      :ok = register_instance(controller, "node-1", "inst-1")
+      :ok = register_peer(controller, "inst-1", "peer-1")
+
+      {:ok, config} =
+        Client.store_client_config(node(), "cmd-config", "peer-1", "193.233.91.130:51820")
+
+      path = Path.join(System.tmp_dir!(), "wgm-peer-1.conf")
+      on_exit(fn -> File.rm(path) end)
+
+      assert :ok = Client.write_client_config(node(), "peer-1", path)
+      assert File.read!(path) == config
+    end
+
+    test "write_client_config/3 returns error when no config is stored" do
+      controller = start_controller()
+      :ok = register_node(controller, "node-1")
+      :ok = register_instance(controller, "node-1", "inst-1")
+      :ok = register_peer(controller, "inst-1", "peer-1")
+
+      path = Path.join(System.tmp_dir!(), "wgm-peer-missing.conf")
+
+      assert {:error, "Client config not found"} =
+               Client.write_client_config(node(), "peer-1", path)
+    end
+
+    test "show_client_config_qr/2 prints a QR code for the stored config" do
+      controller = start_controller()
+      :ok = register_node(controller, "node-1")
+      :ok = register_instance(controller, "node-1", "inst-1")
+      :ok = register_peer(controller, "inst-1", "peer-1")
+
+      Client.store_client_config(node(), "cmd-config", "peer-1", "193.233.91.130:51820")
+
+      output =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :ok = Client.show_client_config_qr(node(), "peer-1")
+        end)
+
+      assert output != ""
+      assert String.contains?(output, "\e[")
+    end
+
+    test "show_client_config_qr/2 returns error when no config is stored" do
+      controller = start_controller()
+      :ok = register_node(controller, "node-1")
+      :ok = register_instance(controller, "node-1", "inst-1")
+      :ok = register_peer(controller, "inst-1", "peer-1")
+
+      assert {:error, "Client config not found"} =
+               Client.show_client_config_qr(node(), "peer-1")
     end
   end
 

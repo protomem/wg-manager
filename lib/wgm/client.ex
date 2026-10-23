@@ -74,6 +74,89 @@ defmodule WGM.Client do
   end
 
   @doc """
+  Возвращает пира по идентификатору.
+  """
+  @spec get_peer(node(), String.t()) :: {:ok, WGM.Peer.t() | nil} | {:error, String.t()}
+  def get_peer(controller_node, peer_id) do
+    call_controller(controller_node, WGM.Controller, :get_peer, [@default_controller, peer_id])
+  end
+
+  @doc """
+  Создаёт пира в инстансе на контроллере.
+  """
+  @spec create_peer(node(), String.t(), map()) :: {:ok, String.t()} | {:error, String.t()}
+  def create_peer(controller_node, command_id, attrs) do
+    call_controller_unwrapped(controller_node, WGM.Controller, :create_peer, [
+      @default_controller,
+      command_id,
+      attrs
+    ])
+  end
+
+  @doc """
+  Удаляет пира с контроллера.
+  """
+  @spec delete_peer(node(), String.t(), String.t()) :: {:ok, String.t()} | {:error, String.t()}
+  def delete_peer(controller_node, command_id, peer_id) do
+    call_controller_unwrapped(controller_node, WGM.Controller, :delete_peer, [
+      @default_controller,
+      command_id,
+      peer_id
+    ])
+  end
+
+  @doc """
+  Генерирует и сохраняет клиентский конфиг пира.
+  """
+  @spec store_client_config(node(), String.t(), String.t(), String.t()) ::
+          {:ok, String.t()} | {:error, String.t()}
+  def store_client_config(controller_node, command_id, peer_id, endpoint) do
+    call_controller_unwrapped(controller_node, WGM.Controller, :store_client_config, [
+      @default_controller,
+      command_id,
+      peer_id,
+      endpoint
+    ])
+  end
+
+  @doc """
+  Возвращает ранее сохранённый клиентский конфиг пира.
+  """
+  @spec get_client_config(node(), String.t()) :: {:ok, String.t()} | {:error, String.t()}
+  def get_client_config(controller_node, peer_id) do
+    case call_controller(controller_node, WGM.Controller, :get_client_config, [
+           @default_controller,
+           peer_id
+         ]) do
+      {:ok, nil} -> {:error, "Client config not found"}
+      other -> other
+    end
+  end
+
+  @doc """
+  Записывает сохранённый клиентский конфиг пира в файл.
+  """
+  @spec write_client_config(node(), String.t(), String.t()) ::
+          :ok | {:error, String.t()}
+  def write_client_config(controller_node, peer_id, path) do
+    with {:ok, config} <- get_client_config(controller_node, peer_id) do
+      File.write(path, config)
+    end
+  end
+
+  @doc """
+  Показывает QR-код клиентского конфига пира в терминале.
+  """
+  @spec show_client_config_qr(node(), String.t()) :: :ok | {:error, String.t()}
+  def show_client_config_qr(controller_node, peer_id) do
+    with {:ok, config} <- get_client_config(controller_node, peer_id) do
+      config
+      |> EQRCode.encode()
+      |> EQRCode.render()
+    end
+  end
+
+  @doc """
   Возвращает краткую справку по командам клиента.
   """
   @spec help() :: String.t()
@@ -85,11 +168,18 @@ defmodule WGM.Client do
       {:ok, ctrl} = WGM.Client.connect("wgm_controller@<ip>", "<cookie>")
 
     Команды:
-      WGM.Client.status(ctrl)        # статус всех узлов
-      WGM.Client.list_nodes(ctrl)    # список узлов
-      WGM.Client.list_instances(ctrl) # список инстансов
-      WGM.Client.list_peers(ctrl)    # список пиров
-      WGM.Client.help()              # эта справка
+      WGM.Client.status(ctrl)                   # статус всех узлов
+      WGM.Client.list_nodes(ctrl)               # список узлов
+      WGM.Client.list_instances(ctrl)           # список инстансов
+      WGM.Client.list_peers(ctrl)               # список пиров
+      WGM.Client.get_peer(ctrl, "peer-id")      # пир по id
+      WGM.Client.create_peer(ctrl, "cmd-id", %{id: ..., instance_id: ..., name: ...})
+      WGM.Client.delete_peer(ctrl, "cmd-id", "peer-id")
+      WGM.Client.store_client_config(ctrl, "cmd-id", "peer-id", "endpoint:port")
+      WGM.Client.get_client_config(ctrl, "peer-id")
+      WGM.Client.write_client_config(ctrl, "peer-id", "/path/to/file.conf")
+      WGM.Client.show_client_config_qr(ctrl, "peer-id")
+      WGM.Client.help()                         # эта справка
 
     Требования: iex должен быть запущен с --name/--sname и --cookie,
     либо distribution включён до вызова connect/2.
@@ -128,6 +218,15 @@ defmodule WGM.Client do
       {:ok, result}
     catch
       kind, reason -> {:error, "#{kind}: #{inspect(reason)}"}
+    end
+  end
+
+  # Для RPC-вызовов, которые сами возвращают {:ok, ...} или {:error, ...}.
+  defp call_controller_unwrapped(node, module, function, args) do
+    case call_controller(node, module, function, args) do
+      {:ok, {:ok, result}} -> {:ok, result}
+      {:ok, {:error, reason}} -> {:error, reason}
+      other -> other
     end
   end
 end
