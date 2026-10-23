@@ -49,7 +49,6 @@ defmodule WGM.ConfigGeneratorTest do
              H2 = 11-20
              H3 = 21-30
              H4 = 31-40
-             HeaderProtectionKey = hpk
 
              [Peer]
              PublicKey = peer-public-key
@@ -104,6 +103,67 @@ defmodule WGM.ConfigGeneratorTest do
       assert {:error, "Private key is required"} =
                ConfigGenerator.generate_server_config(instance, [wg_server_peer()], nil)
     end
+
+    test "cascade server configs never contain 0.0.0.0/0 in peer AllowedIPs" do
+      # Entry WG laptop server and its laptop peer.
+      entry_wg = %Instance{
+        id: "entry-wg-laptop",
+        node_id: "entry-node",
+        name: "wg-laptop",
+        protocol: :wg,
+        listen_port: 52_810,
+        subnet: "10.210.0.0/24",
+        private_key: "entry-wg-priv",
+        public_key: "entry-wg-pub",
+        address: "10.210.0.1/24"
+      }
+
+      laptop_peer = %Peer{
+        id: "laptop-1",
+        instance_id: "entry-wg-laptop",
+        name: "laptop-1",
+        private_key: "laptop-priv",
+        public_key: "laptop-pub",
+        preshared_key: "psk",
+        allowed_ips: "10.210.0.2/32",
+        persistent_keepalive: "25",
+        address: "10.210.0.2/32"
+      }
+
+      {:ok, entry_config} =
+        ConfigGenerator.generate_server_config(entry_wg, [laptop_peer], "entry-wg-priv")
+
+      refute entry_config =~ "AllowedIPs = 0.0.0.0/0"
+
+      # Exit AWG server and its entry-transit peer.
+      exit_awg = %Instance{
+        id: "exit-awg",
+        node_id: "exit-node",
+        name: "awg-exit",
+        protocol: :awg,
+        listen_port: 52_812,
+        subnet: "10.200.1.0/24",
+        private_key: "exit-awg-priv",
+        public_key: "exit-awg-pub",
+        address: "10.200.1.1/24",
+        awg_params: awg_params()
+      }
+
+      transit_peer = %Peer{
+        id: "exit-awg-peer-entry-transit",
+        instance_id: "exit-awg",
+        name: "entry-transit",
+        public_key: "transit-pub",
+        preshared_key: "psk",
+        allowed_ips: "10.210.0.0/24,10.200.0.1/32",
+        persistent_keepalive: nil
+      }
+
+      {:ok, exit_config} =
+        ConfigGenerator.generate_server_config(exit_awg, [transit_peer], "exit-awg-priv")
+
+      refute exit_config =~ "AllowedIPs = 0.0.0.0/0"
+    end
   end
 
   describe "generate_client_config/3" do
@@ -157,7 +217,6 @@ defmodule WGM.ConfigGeneratorTest do
              I3 = 3
              I4 = 4
              I5 = 5
-             HeaderProtectionKey = hpk
 
              [Peer]
              PublicKey = server-public-key

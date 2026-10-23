@@ -103,8 +103,9 @@ defmodule WGM.Controller.Repo do
         private_key, public_key, address, dns, mtu,
         jc, jmin, jmax, s1, s2, s3, s4,
         h1, h2, h3, h4, i1, i2, i3, i4, i5,
-        header_protection_key, post_up, post_down, state, inserted_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        header_protection_key, table_name, pre_up, post_up, pre_down, post_down,
+        state, inserted_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       """,
       [
         instance.id,
@@ -135,7 +136,10 @@ defmodule WGM.Controller.Repo do
         awg && awg.i4,
         awg && awg.i5,
         awg && awg.header_protection_key,
+        instance.table,
+        join_commands(instance.pre_up),
         join_commands(instance.post_up),
+        join_commands(instance.pre_down),
         join_commands(instance.post_down),
         to_string(instance.target_state || :configured),
         now,
@@ -181,7 +185,8 @@ defmodule WGM.Controller.Repo do
         protocol = ?, listen_port = ?, subnet = ?, public_key = ?, address = ?, dns = ?, mtu = ?,
         jc = ?, jmin = ?, jmax = ?, s1 = ?, s2 = ?, s3 = ?, s4 = ?,
         h1 = ?, h2 = ?, h3 = ?, h4 = ?, i1 = ?, i2 = ?, i3 = ?, i4 = ?, i5 = ?,
-        header_protection_key = ?, post_up = ?, post_down = ?, state = ?, updated_at = ?
+        header_protection_key = ?, table_name = ?, pre_up = ?, post_up = ?, pre_down = ?, post_down = ?,
+        state = ?, updated_at = ?
       WHERE id = ?
       """,
       [
@@ -209,7 +214,10 @@ defmodule WGM.Controller.Repo do
         awg && awg.i4,
         awg && awg.i5,
         awg && awg.header_protection_key,
+        instance.table,
+        join_commands(instance.pre_up),
         join_commands(instance.post_up),
+        join_commands(instance.pre_down),
         join_commands(instance.post_down),
         to_string(instance.target_state || :configured),
         now(),
@@ -555,7 +563,10 @@ defmodule WGM.Controller.Repo do
       i4 INTEGER,
       i5 INTEGER,
       header_protection_key TEXT,
+      table_name TEXT,
+      pre_up TEXT,
       post_up TEXT,
+      pre_down TEXT,
       post_down TEXT,
       state TEXT NOT NULL DEFAULT 'configured',
       inserted_at TEXT NOT NULL,
@@ -774,7 +785,10 @@ defmodule WGM.Controller.Repo do
 
     migrations = [
       {"post_up", "ALTER TABLE instances ADD COLUMN post_up TEXT"},
-      {"post_down", "ALTER TABLE instances ADD COLUMN post_down TEXT"}
+      {"post_down", "ALTER TABLE instances ADD COLUMN post_down TEXT"},
+      {"table_name", "ALTER TABLE instances ADD COLUMN table_name TEXT"},
+      {"pre_up", "ALTER TABLE instances ADD COLUMN pre_up TEXT"},
+      {"pre_down", "ALTER TABLE instances ADD COLUMN pre_down TEXT"}
     ]
 
     Enum.each(migrations, fn {name, sql} ->
@@ -866,7 +880,8 @@ defmodule WGM.Controller.Repo do
       private_key, public_key, address, dns, mtu,
       jc, jmin, jmax, s1, s2, s3, s4,
       h1, h2, h3, h4, i1, i2, i3, i4, i5,
-      header_protection_key, post_up, post_down, state, inserted_at, updated_at
+      header_protection_key, table_name, pre_up, post_up, pre_down, post_down,
+      state, inserted_at, updated_at
     FROM instances
     """
   end
@@ -920,7 +935,10 @@ defmodule WGM.Controller.Repo do
          i4,
          i5,
          header_protection_key,
+         table,
+         pre_up,
          post_up,
+         pre_down,
          post_down,
          state | _
        ]) do
@@ -956,7 +974,10 @@ defmodule WGM.Controller.Repo do
           i5,
           header_protection_key
         ),
+      table: table,
+      pre_up: split_commands(pre_up),
       post_up: split_commands(post_up),
+      pre_down: split_commands(pre_down),
       post_down: split_commands(post_down),
       target_state: parse_state(state)
     }

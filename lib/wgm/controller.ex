@@ -10,7 +10,7 @@ defmodule WGM.Controller do
 
   use GenServer
 
-  alias WGM.{Cascade, ConfigGenerator, Instance, Keygen, Node, Peer}
+  alias WGM.{Cascade, Check, ConfigGenerator, Instance, Keygen, Node, Peer}
   alias WGM.AWGParamsValidator
   alias WGM.Cascade.Builder
   alias WGM.Controller.{AgentAdapter, Repo, Status}
@@ -342,12 +342,17 @@ defmodule WGM.Controller do
                  Repo.get_instance(state.conn, cascade.exit_instance_id),
                %Node{} = entry_node <- Repo.get_node(state.conn, entry_instance.node_id),
                %Node{} = exit_node <- Repo.get_node(state.conn, exit_instance.node_id),
-               plan = Builder.plan_instances(entry_node, exit_node, opts),
+               plan =
+                 Builder.plan_instances(
+                   entry_node,
+                   exit_node,
+                   Keyword.merge(opts, client_subnet: entry_instance.subnet)
+                 ),
                {:ok, entry_transit_id} <- create_instance_from_plan(state, plan.entry_transit),
                {:ok, exit_id} <- create_instance_from_plan(state, plan.exit),
                %Instance{} = entry_transit <- Repo.get_instance(state.conn, entry_transit_id),
                %Instance{} = exit_inst <- Repo.get_instance(state.conn, exit_id),
-               peers = Builder.peer_attrs(entry_transit, exit_inst, exit_node),
+               peers = Builder.peer_attrs(entry_instance, entry_transit, exit_inst, exit_node),
                {:ok, _} <- create_peer_from_attrs(state, peers.entry_peer),
                {:ok, _} <- create_peer_from_attrs(state, peers.exit_peer),
                {:ok, _} <-
@@ -553,16 +558,7 @@ defmodule WGM.Controller do
 
     result =
       execute_command(state, command_id, "create_peer", attrs[:id], summary, fn ->
-        with %Instance{} = instance <- Repo.get_instance(state.conn, instance_id),
-             {:ok, keys} <- maybe_generate_peer_keys(state, instance.protocol, attrs),
-             {:ok, psk} <- Keygen.generate_psk(state.keygen_adapter),
-             peer = build_peer(attrs, keys, psk),
-             :ok <- Repo.insert_peer(state.conn, peer) do
-          {:ok, peer.id}
-        else
-          nil -> {:error, "Instance not found"}
-          {:error, reason} -> {:error, reason}
-        end
+        create_peer_from_attrs(state, attrs)
       end)
 
     {:reply, result, state}
@@ -876,7 +872,10 @@ defmodule WGM.Controller do
         dns: attrs[:dns],
         mtu: attrs[:mtu],
         awg_params: awg_params,
+        table: attrs[:table],
+        pre_up: attrs[:pre_up],
         post_up: attrs[:post_up],
+        pre_down: attrs[:pre_down],
         post_down: attrs[:post_down],
         target_state: :configured
       }
@@ -989,6 +988,7 @@ defmodule WGM.Controller do
 
   defp create_peer_from_attrs(state, attrs) do
     with %Instance{} = instance <- Repo.get_instance(state.conn, attrs.instance_id),
+         :ok <- validate_server_allowed_ips(attrs[:endpoint], attrs[:allowed_ips]),
          {:ok, keys} <- maybe_generate_peer_keys(state, instance.protocol, attrs),
          {:ok, psk} <- Keygen.generate_psk(state.keygen_adapter),
          peer = build_peer(attrs, keys, psk),
@@ -999,6 +999,14 @@ defmodule WGM.Controller do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  # Peer without an endpoint is a server-side peer (the remote side initiates).
+  # Server-side peers must use concrete AllowedIPs to avoid full-tunnel policy
+  # routing on the server.
+  defp validate_server_allowed_ips(nil, "0.0.0.0/0"),
+    do: {:error, "Server-side peers must not use AllowedIPs = 0.0.0.0/0"}
+
+  defp validate_server_allowed_ips(_endpoint, _allowed_ips), do: :ok
 
   defp build_peer(attrs, keys, psk) do
     %Peer{
@@ -1110,7 +1118,8 @@ defmodule WGM.Controller do
 
   defp run_active_check_on_node(state, node_id, kind, target) do
     with %Node{} = node <- Repo.get_node(state.conn, node_id),
-         {:ok, result} <- state.agent_adapter.check(node, kind, target) do
+         %Check.Result{} = result <-
+           normalize_check_result(state.agent_adapter.check(node, kind, target)) do
       result = with_last_success_at(state, result)
       :ok = Repo.insert_check_result(state.conn, result)
       {:ok, result}
@@ -1119,6 +1128,13 @@ defmodule WGM.Controller do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp normalize_check_result({:ok, %Check.Result{} = result}), do: result
+  defp normalize_check_result(%Check.Result{} = result), do: result
+  defp normalize_check_result({:error, reason}), do: {:error, reason}
+
+  defp normalize_check_result(other),
+    do: {:error, "unexpected check result: #{inspect(other)}"}
 
   defp source_ip(address) when is_binary(address) do
     address

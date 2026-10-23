@@ -104,7 +104,20 @@ defmodule WGM.ControllerAssembleCascadeTest do
       assert length(exit_peers) == 1
 
       assert [%Peer{allowed_ips: "0.0.0.0/0"}] = entry_peers
-      assert [%Peer{allowed_ips: "10.200.0.0/30"}] = exit_peers
+      assert [%Peer{allowed_ips: "10.0.0.0/24,10.200.0.1/32"}] = exit_peers
+
+      entry_transit = Controller.get_instance(controller, "cascade-entry-transit")
+      assert entry_transit.table == "off"
+
+      assert Enum.any?(
+               entry_transit.post_up,
+               &String.contains?(&1, "ip rule add from 10.0.0.0/24")
+             )
+
+      assert Enum.any?(
+               entry_transit.post_up,
+               &String.contains?(&1, "ip route add default dev %i")
+             )
 
       apply_calls = FakeAgentAdapter.calls()
 

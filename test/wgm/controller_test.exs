@@ -241,6 +241,23 @@ defmodule WGM.ControllerTest do
                event.type == "create_peer" and event.summary =~ "created peer peer-1"
              end)
     end
+
+    test "rejects 0.0.0.0/0 AllowedIPs on server-side instance" do
+      controller = start_controller()
+      register_node(controller, "node-1")
+      register_instance(controller, "node-1", "inst-1")
+
+      attrs = %{
+        id: "peer-1",
+        instance_id: "inst-1",
+        name: "laptop",
+        allowed_ips: "0.0.0.0/0",
+        address: "10.0.0.2/32"
+      }
+
+      assert {:error, "Server-side peers must not use AllowedIPs = 0.0.0.0/0"} =
+               Controller.create_peer(controller, "cmd-peer", attrs)
+    end
   end
 
   describe "client config" do

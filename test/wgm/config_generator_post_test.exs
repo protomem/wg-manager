@@ -69,5 +69,40 @@ defmodule WGM.ConfigGeneratorPostTest do
       assert stripped =~ "[Interface]"
       assert stripped =~ "PrivateKey"
     end
+
+    test "includes Table, PreUp and PreDown when set" do
+      instance =
+        wg_instance(%{
+          table: "off",
+          pre_up: ["ip rule add from 10.210.0.0/24 lookup 52001"],
+          post_up: ["ip route add default dev %i table 52001"],
+          pre_down: ["ip rule del from 10.210.0.0/24 lookup 52001"],
+          post_down: ["ip route del default dev %i table 52001"]
+        })
+
+      {:ok, config} = ConfigGenerator.generate_server_config(instance, [], "server-priv")
+
+      assert config =~ "Table = off"
+      assert config =~ "PreUp = ip rule add from 10.210.0.0/24 lookup 52001"
+      assert config =~ "PostUp = ip route add default dev %i table 52001"
+      assert config =~ "PreDown = ip rule del from 10.210.0.0/24 lookup 52001"
+      assert config =~ "PostDown = ip route del default dev %i table 52001"
+    end
+
+    test "strip_quick_keys removes Table, PreUp and PreDown" do
+      instance =
+        wg_instance(%{
+          table: "off",
+          pre_up: ["ip rule add from 10.210.0.0/24 lookup 52001"],
+          pre_down: ["ip rule del from 10.210.0.0/24 lookup 52001"]
+        })
+
+      {:ok, config} = ConfigGenerator.generate_server_config(instance, [], "server-priv")
+      stripped = ConfigGenerator.strip_quick_keys(config)
+
+      refute stripped =~ "Table"
+      refute stripped =~ "PreUp"
+      refute stripped =~ "PreDown"
+    end
   end
 end

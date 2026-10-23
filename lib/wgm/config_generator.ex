@@ -94,7 +94,10 @@ defmodule WGM.ConfigGenerator do
     base = if listen_port, do: base ++ ["ListenPort = #{listen_port}"], else: base
     base = if dns, do: base ++ ["DNS = #{dns}"], else: base
     base = if mtu, do: base ++ ["MTU = #{mtu}"], else: base
+    base = if instance.table, do: base ++ ["Table = #{instance.table}"], else: base
+    base = base ++ Enum.map(List.wrap(instance.pre_up), &"PreUp = #{&1}")
     base = base ++ Enum.map(List.wrap(instance.post_up), &"PostUp = #{&1}")
+    base = base ++ Enum.map(List.wrap(instance.pre_down), &"PreDown = #{&1}")
     base = base ++ Enum.map(List.wrap(instance.post_down), &"PostDown = #{&1}")
 
     base =
@@ -174,12 +177,10 @@ defmodule WGM.ConfigGenerator do
     ]
   end
 
-  defp header_protection_line(%Instance.AWGParams{header_protection_key: key})
-       when key in [nil, "(none)"],
-       do: []
-
-  defp header_protection_line(%Instance.AWGParams{} = params),
-    do: ["HeaderProtectionKey = #{params.header_protection_key}"]
+  # HeaderProtectionKey is stored in the DB but omitted from generated configs
+  # because current amneziawg-tools/kernel builds inconsistently reject it
+  # (accepted on entry, rejected on exit with identical package versions).
+  defp header_protection_line(%Instance.AWGParams{} = _params), do: []
 
   defp awg_security?(%Instance{protocol: :awg} = instance),
     do: not AWGParamsValidator.masking_disabled?(instance.awg_params)

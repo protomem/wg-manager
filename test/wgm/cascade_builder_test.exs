@@ -61,8 +61,38 @@ defmodule WGM.CascadeBuilderTest do
     end
   end
 
-  describe "peer_attrs/3" do
+  describe "plan_instances/3 routing policy" do
+    test "entry transit uses Table = off and selective policy rules" do
+      plan =
+        Cascade.Builder.plan_instances(entry_node(), exit_node(), client_subnet: "10.210.0.0/24")
+
+      assert plan.entry_transit.table == "off"
+
+      assert plan.entry_transit.post_up == [
+               "ip rule add from 10.210.0.0/24 lookup 52001",
+               "ip route add default dev %i table 52001"
+             ]
+
+      assert plan.entry_transit.pre_down == [
+               "ip rule del from 10.210.0.0/24 lookup 52001",
+               "ip route del default dev %i table 52001"
+             ]
+    end
+  end
+
+  describe "peer_attrs/4" do
     test "returns peer attrs linking entry transit to exit instance" do
+      entry_wg = %Instance{
+        id: "entry-wg",
+        node_id: "entry-node",
+        name: "wg-laptop",
+        protocol: :wg,
+        listen_port: 52_810,
+        subnet: "10.210.0.0/24",
+        public_key: "pub-wg",
+        address: "10.210.0.1/24"
+      }
+
       entry_transit = %Instance{
         id: "et-1",
         node_id: "entry-node",
@@ -85,7 +115,7 @@ defmodule WGM.CascadeBuilderTest do
         address: "10.200.1.1/24"
       }
 
-      peers = Cascade.Builder.peer_attrs(entry_transit, exit_instance, exit_node())
+      peers = Cascade.Builder.peer_attrs(entry_wg, entry_transit, exit_instance, exit_node())
 
       assert peers.entry_peer.public_key == "pub-ex"
       assert peers.entry_peer.allowed_ips == "0.0.0.0/0"
@@ -93,7 +123,7 @@ defmodule WGM.CascadeBuilderTest do
       assert peers.entry_peer.persistent_keepalive == 25
 
       assert peers.exit_peer.public_key == "pub-et"
-      assert peers.exit_peer.allowed_ips == "10.200.0.0/30"
+      assert peers.exit_peer.allowed_ips == "10.210.0.0/24,10.200.0.1/32"
     end
   end
 end

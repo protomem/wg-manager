@@ -224,6 +224,37 @@ defmodule WGM.ControllerChecksTest do
                Controller.run_active_check(controller, "missing", :ping)
     end
 
+    test "run_active_check handles unwrapped check result from adapter" do
+      controller = start_controller()
+      register_node(controller, "node-1")
+
+      now = DateTime.utc_now()
+
+      # Distribution adapter returns raw Check.Result, not {:ok, result}.
+      FakeAgentAdapter.set_check_result(
+        "node-1",
+        :ping,
+        nil,
+        %Check.Result{
+          node_id: "node-1",
+          instance_id: nil,
+          peer_id: nil,
+          kind: :ping,
+          status: :ok,
+          detail: "ping ok",
+          checked_at: now,
+          last_success_at: now
+        }
+      )
+
+      assert {:ok, result} = Controller.run_active_check(controller, "node-1", :ping)
+      assert result.status == :ok
+      assert result.detail == "ping ok"
+
+      [stored] = Controller.check_results(controller, node_id: "node-1", kind: :ping)
+      assert stored.status == :ok
+    end
+
     test "scheduler runs end_to_end checks for assembled cascades" do
       controller = start_controller()
       register_node(controller, "entry-node", :entry)
