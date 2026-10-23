@@ -5,8 +5,9 @@ defmodule WGM.Client do
   Подключается к контроллеру по Erlang distribution и предоставляет
   статус узлов/инстансов/пиров, а также операции чтения желаемого состояния.
 
-  Пример использования в `iex`:
+  Пример использования в `iex` (нода клиента обязательно hidden):
 
+      $ iex --sname wgm_client --hidden --cookie my-cookie -S mix
       iex> {:ok, ctrl} = WGM.Client.connect("wgm_controller@5.129.219.31", "my-cookie")
       iex> WGM.Client.status(ctrl)
       iex> WGM.Client.list_instances(ctrl)
@@ -21,13 +22,19 @@ defmodule WGM.Client do
   `controller_node` — имя ноды контроллера (`"wgm_controller@<ip>"`).
   `cookie` — общий Erlang-cookie (строка).
 
-  Возвращает `{:ok, node}`, если distribution включён и нода доступна.
+  Требования: локальная нода должна быть запущена в hidden-режиме, например:
+
+      iex --sname <name> --hidden --cookie <cookie> -S mix
+
+  Если нода не hidden, возвращает `{:error, ...}` с инструкцией.
+  Возвращает `{:ok, node}`, если distribution включён, нода hidden и контроллер доступен.
   """
   @spec connect(String.t() | atom(), String.t()) :: {:ok, node()} | {:error, String.t()}
   def connect(controller_node, cookie) do
     node = normalize_node(controller_node)
 
     with :ok <- ensure_distribution(),
+         :ok <- ensure_hidden(),
          :ok <- set_cookie(node, cookie),
          true <- Node.connect(node) do
       {:ok, node}
@@ -149,7 +156,9 @@ defmodule WGM.Client do
   @doc """
   Записывает сохранённый клиентский конфиг пира в файл.
 
-  Файл создаётся с правами `0o600`, чтобы ограничить доступ к приватному ключу.
+  Временный файл создаётся с правами `0o600` ещё в момент открытия,
+  в него записывается содержимое, после чего выполняется атомарный rename
+  в целевой путь. При ошибке временный файл удаляется.
   """
   @spec write_client_config(node(), String.t(), String.t()) ::
           :ok | {:error, String.t()}
@@ -160,23 +169,43 @@ defmodule WGM.Client do
     end
   end
 
-  defp write_file_private(path, content) do
+  @doc false
+  def write_file_private(path, content, rename_fn \\ &File.rename/2) do
     dir = Path.dirname(path)
     tmp_path = Path.join(dir, ".#{Path.basename(path)}.#{System.unique_integer([:positive])}.tmp")
 
-    with :ok <- File.write(tmp_path, content),
-         :ok <- File.chmod(tmp_path, 0o600),
-         :ok <- File.rename(tmp_path, path) do
-      :ok
-    else
-      {:error, reason} when is_atom(reason) ->
-        File.rm(tmp_path)
-        {:error, to_string(:file.format_error(reason))}
+    case :file.open(tmp_path, [:write, :exclusive, :binary, {:mode, 0o600}]) do
+      {:ok, device} ->
+        try do
+          with :ok <- File.chmod(tmp_path, 0o600),
+               :ok <- IO.write(device, content),
+               :ok <- :file.close(device),
+               :ok <- rename_fn.(tmp_path, path) do
+            :ok
+          else
+            {:error, reason} when is_atom(reason) ->
+              cleanup_tmp(tmp_path)
+              {:error, to_string(:file.format_error(reason))}
 
-      error ->
-        File.rm(tmp_path)
-        error
+            error ->
+              cleanup_tmp(tmp_path)
+              error
+          end
+        catch
+          kind, reason ->
+            :erlang.raise(kind, reason, __STACKTRACE__)
+        after
+          _ = :file.close(device)
+        end
+
+      {:error, reason} ->
+        {:error, to_string(:file.format_error(reason))}
     end
+  end
+
+  defp cleanup_tmp(tmp_path) do
+    _ = File.rm(tmp_path)
+    :ok
   end
 
   @doc """
@@ -200,6 +229,7 @@ defmodule WGM.Client do
     WGM.Client — iex-клиент управления WG/AWG-VPN.
 
     Подключение:
+      iex --sname <name> --hidden --cookie <cookie> -S mix
       {:ok, ctrl} = WGM.Client.connect("wgm_controller@<ip>", "<cookie>")
 
     Команды:
@@ -216,7 +246,7 @@ defmodule WGM.Client do
       WGM.Client.show_client_config_qr(ctrl, "peer-id")
       WGM.Client.help()                         # эта справка
 
-    Требования: iex должен быть запущен с --name/--sname и --cookie,
+    Требования: iex должен быть запущен с --name/--sname, --cookie и --hidden,
     либо distribution включён до вызова connect/2.
     """
   end
@@ -227,6 +257,16 @@ defmodule WGM.Client do
   defp ensure_distribution do
     if Node.self() == :nonode@nohost do
       {:error, "Erlang distribution is not enabled"}
+    else
+      :ok
+    end
+  end
+
+  defp ensure_hidden do
+    if :net_kernel.publish_on_node(Node.self()) do
+      {:error,
+       "Client node must be started in hidden mode. " <>
+         "Run: iex --sname <name> --hidden --cookie <cookie> -S mix"}
     else
       :ok
     end

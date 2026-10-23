@@ -4,6 +4,8 @@ defmodule WGM.ClientTest do
   alias WGM.{Client, Controller, Instance, Peer}
   alias WGM.Controller.AgentAdapter.Fake
 
+  @moduletag :tmp_dir
+
   setup do
     Fake.start()
     :ok
@@ -235,6 +237,63 @@ defmodule WGM.ClientTest do
 
       assert {:error, "Client config not found"} =
                Client.show_client_config_qr(node(), "peer-1")
+    end
+  end
+
+  describe "write_file_private/3" do
+    test "writes content and sets final file permissions to 0o600", %{tmp_dir: tmp_dir} do
+      path = Path.join(tmp_dir, "wgm-secret.conf")
+
+      assert :ok = Client.write_file_private(path, "secret-config")
+      assert File.read!(path) == "secret-config"
+      assert File.stat!(path).mode |> Bitwise.band(0o777) == 0o600
+    end
+
+    test "overwrites an existing target file", %{tmp_dir: tmp_dir} do
+      path = Path.join(tmp_dir, "wgm-secret.conf")
+      File.write!(path, "old-config")
+
+      assert :ok = Client.write_file_private(path, "new-config")
+      assert File.read!(path) == "new-config"
+      assert File.stat!(path).mode |> Bitwise.band(0o777) == 0o600
+    end
+
+    test "leaves no temp files after a successful write", %{tmp_dir: tmp_dir} do
+      path = Path.join(tmp_dir, "wgm-secret.conf")
+
+      assert :ok = Client.write_file_private(path, "secret-config")
+      assert Path.wildcard(Path.join(tmp_dir, ".wgm-secret.conf.*.tmp")) == []
+    end
+
+    test "removes the temp file when rename fails", %{tmp_dir: tmp_dir} do
+      path = Path.join(tmp_dir, "wgm-secret.conf")
+
+      assert {:error, _reason} =
+               Client.write_file_private(path, "secret-config", fn _src, _dst ->
+                 {:error, :eacces}
+               end)
+
+      assert Path.wildcard(Path.join(tmp_dir, ".wgm-secret.conf.*.tmp")) == []
+    end
+
+    test "temp file is created with 0o600 permissions even if rename crashes", %{
+      tmp_dir: tmp_dir
+    } do
+      path = Path.join(tmp_dir, "wgm-secret.conf")
+      test_pid = self()
+
+      assert_raise RuntimeError, "boom", fn ->
+        Client.write_file_private(path, "secret-config", fn src, _dst ->
+          send(test_pid, {:tmp_path, src})
+          raise "boom"
+        end)
+      end
+
+      assert_receive {:tmp_path, tmp_path}, 1_000
+      assert File.exists?(tmp_path)
+      assert File.stat!(tmp_path).mode |> Bitwise.band(0o777) == 0o600
+
+      File.rm!(tmp_path)
     end
   end
 
